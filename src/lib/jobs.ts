@@ -14,7 +14,12 @@ export async function getJob(id: string): Promise<Job | null> {
 }
 
 export async function getJobPhotos(jobId: string): Promise<JobPhoto[]> {
-  return query<JobPhoto>("SELECT * FROM job_photos WHERE job_id = $1 ORDER BY created_at", [jobId]);
+  return query<JobPhoto>(
+    `SELECT p.*, u.name AS user_name
+       FROM job_photos p LEFT JOIN users u ON u.id = p.user_id
+      WHERE p.job_id = $1 ORDER BY p.created_at`,
+    [jobId],
+  );
 }
 
 export type JobFilter = {

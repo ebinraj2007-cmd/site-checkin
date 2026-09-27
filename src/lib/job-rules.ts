@@ -47,6 +47,7 @@ export type JobPhoto = {
   live_camera: boolean;
   device_time: Date | null;
   created_at: Date;
+  user_name?: string | null;
 };
 
 export const LATE_AFTER_MINUTES = 15;

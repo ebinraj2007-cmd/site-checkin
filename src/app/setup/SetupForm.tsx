@@ -32,6 +32,7 @@ export function SetupForm() {
               <input
                 id="countryCode"
                 name="countryCode"
+                required
                 inputMode="numeric"
                 maxLength={4}
                 placeholder="971"
@@ -47,11 +48,11 @@ export function SetupForm() {
           The country code is used for workers&apos; numbers typed without one, and for WhatsApp links.
         </p>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Choose a PIN" htmlFor="pin" hint="4–8 digits">
-            <input id="pin" name="pin" type="password" inputMode="numeric" pattern="\d{4,8}" required autoComplete="new-password" className={inputClass} />
+          <Field label="Choose a PIN" htmlFor="pin" hint="6–8 digits">
+            <input id="pin" name="pin" type="password" inputMode="numeric" pattern="\d{6,8}" required autoComplete="new-password" className={inputClass} />
           </Field>
           <Field label="Repeat PIN" htmlFor="pin2">
-            <input id="pin2" name="pin2" type="password" inputMode="numeric" pattern="\d{4,8}" required autoComplete="new-password" className={inputClass} />
+            <input id="pin2" name="pin2" type="password" inputMode="numeric" pattern="\d{6,8}" required autoComplete="new-password" className={inputClass} />
           </Field>
         </div>
         <input type="hidden" name="timezone" value={timezone} />

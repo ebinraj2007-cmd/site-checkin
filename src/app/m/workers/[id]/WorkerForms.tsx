@@ -43,7 +43,7 @@ export function ResetPinForm({ workerId }: { workerId: string }) {
   return (
     <form onSubmit={onSubmit} className="space-y-3">
       <Field label="New PIN" htmlFor="new-pin" hint="Leave empty to make one up. Their phone is logged out until they use it.">
-        <input id="new-pin" name="pin" inputMode="numeric" pattern="\d{4,8}" maxLength={8} className={`${inputClass} max-w-40`} />
+        <input id="new-pin" name="pin" inputMode="numeric" pattern="\d{6,8}" maxLength={8} className={`${inputClass} max-w-40`} />
       </Field>
       <SubmitButton pending={pending} variant="secondary" pendingText="Resetting…">
         Reset PIN

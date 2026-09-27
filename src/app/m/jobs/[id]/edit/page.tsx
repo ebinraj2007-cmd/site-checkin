@@ -30,6 +30,11 @@ export default async function EditJobPage(props: PageProps<"/m/jobs/[id]/edit">)
         fallbackCenter={null}
         timezone={settings.timezone}
         submitLabel="Save changes"
+        workerLocked={
+          job.status === "arrived"
+            ? `${job.worker_name ?? "The worker"} is on site now. To send someone else, cancel this job and create a new one.`
+            : undefined
+        }
         defaults={{
           title: job.title,
           assignedTo: job.assigned_to ?? "",

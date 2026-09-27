@@ -1,23 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { normalizePhone, whatsappLink } from "@/lib/phone";
+import { displayPhone, normalizePhone, whatsappLink } from "@/lib/phone";
 
 describe("normalizePhone", () => {
-  it("keeps international numbers", () => {
-    expect(normalizePhone("+971 50 123 4567", "971")).toBe("971501234567");
-    expect(normalizePhone("+44 7700 900123")).toBe("447700900123");
-    expect(normalizePhone("00971501234567", "971")).toBe("971501234567");
+  it("gives the same number however it is typed", () => {
+    for (const typed of ["050 123 4567", "+971 50 123 4567", "00971501234567", "971501234567", "(050) 123-4567"]) {
+      expect(normalizePhone(typed, "971")).toBe("971501234567");
+    }
   });
-  it("adds the company country code to local numbers", () => {
-    expect(normalizePhone("050 123 4567", "971")).toBe("971501234567");
-    expect(normalizePhone("(050) 123-4567", "+971")).toBe("971501234567");
+  it("handles national numbers that start with the country code digits (India)", () => {
+    expect(normalizePhone("91234 56789", "91")).toBe("919123456789");
+    expect(normalizePhone("+91 91234 56789", "91")).toBe("919123456789");
+    expect(normalizePhone("919123456789", "91")).toBe("919123456789");
   });
-  it("doesn't add the country code twice", () => {
-    expect(normalizePhone("971501234567", "971")).toBe("971501234567");
+  it("keeps other countries' numbers typed with +", () => {
+    expect(normalizePhone("+44 7911 123456", "971")).toBe("447911123456");
   });
-  it("rejects junk", () => {
+  it("needs a country code for local numbers", () => {
+    expect(normalizePhone("050 123 4567", "")).toBeNull();
+    expect(normalizePhone("+971 50 123 4567", "")).toBe("971501234567");
+  });
+  it("rejects numbers that can't exist", () => {
     expect(normalizePhone("", "971")).toBeNull();
-    expect(normalizePhone("12345", "")).toBeNull();
+    expect(normalizePhone("12345", "971")).toBeNull();
     expect(normalizePhone("+1234567890123456", "")).toBeNull();
+  });
+});
+
+describe("displayPhone", () => {
+  it("formats stored digits for people", () => {
+    expect(displayPhone("971501234567")).toBe("+971 50 123 4567");
+    expect(displayPhone("")).toBe("");
   });
 });
 

@@ -22,7 +22,7 @@ function scrypt(secret: string, salt: Buffer, keylen: number): Promise<Buffer> {
 }
 
 export function isValidPin(pin: string): boolean {
-  return /^\d{4,8}$/.test(pin);
+  return /^\d{6,8}$/.test(pin);
 }
 
 export function randomPin(): string {
@@ -102,41 +102,49 @@ export async function hasAnyUser(): Promise<boolean> {
   return (await queryOne("SELECT 1 FROM users LIMIT 1")) !== null;
 }
 
-type LoginRow = SessionUser & {
-  pin_hash: string;
-  active: boolean;
-  locked_until: Date | null;
-};
+type LoginRow = SessionUser & { pin_hash: string; failed_logins: number };
 
+let dummyHash: Promise<string> | null = null;
+
+// Login with a lockout that holds under parallel requests: each attempt first reserves
+// one of MAX_FAILED_LOGINS tries in a single UPDATE, and only then runs the slow PIN
+// check. A burst of guesses gets at most that many tries per lock window.
 export async function checkLogin(
   phone: string,
   pin: string,
 ): Promise<{ ok: true; user: SessionUser } | { ok: false; error: string }> {
   const wrong = "Wrong phone number or PIN.";
+  const tooMany = (minutes: number) => `Too many wrong PINs. Try again in ${minutes} min.`;
   const row = await queryOne<LoginRow>(
-    "SELECT id, name, phone, role, pin_hash, active, locked_until FROM users WHERE phone = $1",
-    [phone],
+    `UPDATE users
+        SET failed_logins = CASE WHEN locked_until <= now() THEN 1 ELSE failed_logins + 1 END,
+            locked_until = CASE WHEN locked_until <= now() THEN NULL ELSE locked_until END
+      WHERE phone = $1 AND active
+        AND (failed_logins < $2 OR locked_until <= now())
+      RETURNING id, name, phone, role, pin_hash, failed_logins`,
+    [phone, MAX_FAILED_LOGINS],
   );
-  if (!row || !row.active) return { ok: false, error: wrong };
-  if (row.locked_until && row.locked_until.getTime() > Date.now()) {
-    const minutes = Math.ceil((row.locked_until.getTime() - Date.now()) / 60_000);
-    return { ok: false, error: `Too many wrong PINs. Try again in ${minutes} min.` };
+  if (!row) {
+    // Unknown number, or no tries left. Spend the same time as a real check either way.
+    dummyHash ??= hashPin("000000");
+    await verifyPin(pin, await dummyHash);
+    const locked = await queryOne<{ locked_until: Date }>(
+      `UPDATE users SET locked_until = COALESCE(locked_until, now() + ($2 || ' minutes')::interval)
+        WHERE phone = $1 AND active AND failed_logins >= $3
+        RETURNING locked_until`,
+      [phone, String(LOCK_MINUTES), MAX_FAILED_LOGINS],
+    );
+    if (!locked) return { ok: false, error: wrong };
+    return { ok: false, error: tooMany(Math.max(1, Math.ceil((locked.locked_until.getTime() - Date.now()) / 60_000))) };
   }
   if (!(await verifyPin(pin, row.pin_hash))) {
-    const [{ failed_logins }] = await query<{ failed_logins: number }>(
-      "UPDATE users SET failed_logins = failed_logins + 1 WHERE id = $1 RETURNING failed_logins",
-      [row.id],
+    if (row.failed_logins < MAX_FAILED_LOGINS) return { ok: false, error: wrong };
+    await query(
+      `UPDATE users SET locked_until = now() + ($2 || ' minutes')::interval
+        WHERE id = $1 AND locked_until IS NULL`,
+      [row.id, String(LOCK_MINUTES)],
     );
-    if (failed_logins >= MAX_FAILED_LOGINS) {
-      await query(
-        `UPDATE users SET failed_logins = 0,
-                locked_until = now() + ($2 || ' minutes')::interval
-          WHERE id = $1`,
-        [row.id, String(LOCK_MINUTES)],
-      );
-      return { ok: false, error: `Too many wrong PINs. Try again in ${LOCK_MINUTES} min.` };
-    }
-    return { ok: false, error: wrong };
+    return { ok: false, error: tooMany(LOCK_MINUTES) };
   }
   await query("UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = $1", [row.id]);
   return { ok: true, user: { id: row.id, name: row.name, phone: row.phone, role: row.role } };

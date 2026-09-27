@@ -26,6 +26,37 @@ async function currentSubscription() {
   return reg.pushManager.getSubscription();
 }
 
+async function serverKey(): Promise<string> {
+  const res = await fetch("/api/push/key");
+  if (!res.ok) throw new Error("Couldn't reach the server.");
+  return (await res.json()).publicKey;
+}
+
+function sameKey(key: ArrayBuffer | null | undefined, publicKey: string) {
+  if (!key) return true; // older browsers don't expose it; assume it matches
+  const a = new Uint8Array(key);
+  const b = urlBase64ToUint8Array(publicKey);
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+// A subscription made for this server's current keys, creating one if needed.
+async function subscribe(publicKey: string) {
+  const reg = await navigator.serviceWorker.ready;
+  const existing = await reg.pushManager.getSubscription();
+  if (existing && sameKey(existing.options.applicationServerKey, publicKey)) return existing;
+  await existing?.unsubscribe();
+  return reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) });
+}
+
+async function saveSubscription(sub: PushSubscription) {
+  const res = await fetch("/api/push/subscribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(sub),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Could not save.");
+}
+
 // "Turn on job alerts" for this phone: explains the iPhone home-screen step, asks for
 // permission, and registers the push subscription with the server.
 export function PushSetup({ compact = false }: { compact?: boolean }) {
@@ -42,16 +73,18 @@ export function PushSetup({ compact = false }: { compact?: boolean }) {
       } else if (Notification.permission === "denied") {
         next = "blocked";
       } else {
-        const sub = await currentSubscription().catch(() => null);
-        if (sub) {
-          // Re-send, in case the server lost it (e.g. worker logged in on a shared phone).
-          await fetch("/api/push/subscribe", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(sub),
-          }).catch(() => {});
+        const existing = await currentSubscription().catch(() => null);
+        next = "off";
+        if (existing) {
+          // Re-register on every visit: the server may have lost it (a shared phone, new
+          // server keys), and a subscription made for old keys is replaced.
+          try {
+            await saveSubscription(await subscribe(await serverKey()));
+            next = "on";
+          } catch {
+            next = "off";
+          }
         }
-        next = sub ? "on" : "off";
       }
       if (!cancelled) setStatus(next);
     })();
@@ -69,17 +102,7 @@ export function PushSetup({ compact = false }: { compact?: boolean }) {
         setStatus(permission === "denied" ? "blocked" : "off");
         return;
       }
-      const { publicKey } = await (await fetch("/api/push/key")).json();
-      const reg = await navigator.serviceWorker.ready;
-      const sub =
-        (await reg.pushManager.getSubscription()) ??
-        (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) }));
-      const res = await fetch("/api/push/subscribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(sub),
-      });
-      if (!res.ok) throw new Error((await res.json()).error ?? "Could not save.");
+      await saveSubscription(await subscribe(await serverKey()));
       setStatus("on");
       setMessage("Job alerts are on for this phone.");
     } catch (e) {

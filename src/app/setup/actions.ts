@@ -18,8 +18,9 @@ export async function setupAction(_prev: SetupState, form: FormData): Promise<Se
   const phone = normalizePhone(String(form.get("phone") ?? ""), countryCode);
 
   if (!company || !name) return { error: "Enter your company name and your name." };
-  if (!phone) return { error: "Enter your mobile number (with country code)." };
-  if (!isValidPin(pin)) return { error: "The PIN must be 4 to 8 digits." };
+  if (!countryCode) return { error: "Enter your country code, e.g. 971 for the UAE or 91 for India." };
+  if (!phone) return { error: "That mobile number doesn't look right. Check the country code and the number." };
+  if (!isValidPin(pin)) return { error: "The PIN must be 6 to 8 digits." };
   if (pin !== pin2) return { error: "The two PINs don't match." };
 
   const pinHash = await hashPin(pin);

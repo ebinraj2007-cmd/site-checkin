@@ -28,6 +28,12 @@ function sameOrigin(req: Request): boolean {
   }
 }
 
+// Refuse oversized bodies before reading them (Vercel caps at 4.5 MB; a self-hosted
+// server would otherwise buffer whatever it is sent).
+export function tooLarge(req: Request, maxBytes: number): boolean {
+  return Number(req.headers.get("content-length") ?? 0) > maxBytes;
+}
+
 export function numberField(value: FormDataEntryValue | null): number | null {
   if (typeof value !== "string" || value.trim() === "") return null;
   const n = Number(value);

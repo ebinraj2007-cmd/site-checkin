@@ -15,6 +15,7 @@
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
     "leaflet": "^1.9.4",
+    "libphonenumber-js": "^1.13.14",
     "next": "16.3.6",
     "pg": "^8.23.0",
     "react": "19.2.8",

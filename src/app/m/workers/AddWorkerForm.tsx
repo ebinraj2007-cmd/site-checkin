@@ -18,7 +18,7 @@ export function AddWorkerForm() {
           <input id="phone" name="phone" type="tel" required className={inputClass} placeholder="050 123 4567" />
         </Field>
         <Field label="PIN" htmlFor="pin" hint="Leave empty to make one up.">
-          <input id="pin" name="pin" inputMode="numeric" pattern="\d{4,8}" maxLength={8} className={inputClass} />
+          <input id="pin" name="pin" inputMode="numeric" pattern="\d{6,8}" maxLength={8} className={inputClass} />
         </Field>
         <Field label="Role" htmlFor="role">
           <select id="role" name="role" defaultValue="worker" className={inputClass}>

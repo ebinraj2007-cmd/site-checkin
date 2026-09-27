@@ -46,8 +46,10 @@ export async function transaction<R>(fn: (q: Queryable) => Promise<R>): Promise<
   return (await getDb()).tx(fn);
 }
 
+// DATABASE_URL, else POSTGRES_URL (Vercel's Supabase/Neon integrations), else a
+// prefixed POSTGRES_URL. Other *_DATABASE_URL variables (e.g. E2E_…) are ignored.
 export function databaseUrl(): string {
-  return env("DATABASE_URL") || env("POSTGRES_URL") || "";
+  return process.env.DATABASE_URL || env("POSTGRES_URL") || "";
 }
 
 async function connect(): Promise<Db> {
@@ -79,6 +81,8 @@ async function connectPostgres(url: string): Promise<Db> {
     idleTimeoutMillis: 10_000,
     connectionTimeoutMillis: 10_000,
   });
+  // Hosted poolers close idle connections; without a listener that is an uncaught error.
+  pool.on("error", (err) => console.error("Postgres connection error:", err.message));
   return {
     kind: "postgres",
     async query(text, params = []) {

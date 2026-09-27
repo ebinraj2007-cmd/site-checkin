@@ -23,8 +23,8 @@ export function SettingsForm({ values }: { values: Values }) {
         <input id="companyName" name="companyName" required maxLength={80} defaultValue={values.companyName} className={inputClass} />
       </Field>
       <div className="grid gap-3 sm:grid-cols-3">
-        <Field label="Country code" htmlFor="countryCode" hint="Added to numbers typed without one.">
-          <input id="countryCode" name="countryCode" inputMode="numeric" maxLength={4} defaultValue={values.countryCode} placeholder="971" className={inputClass} />
+        <Field label="Country code" htmlFor="countryCode" hint="Used for numbers typed without one.">
+          <input id="countryCode" name="countryCode" required inputMode="numeric" maxLength={4} defaultValue={values.countryCode} placeholder="971" className={inputClass} />
         </Field>
         <Field label="Timezone" htmlFor="timezone">
           <select id="timezone" name="timezone" defaultValue={values.timezone} key={zones.length} className={inputClass}>
@@ -54,10 +54,10 @@ export function ChangePinForm() {
           <input id="current" name="current" type="password" inputMode="numeric" required autoComplete="current-password" className={inputClass} />
         </Field>
         <Field label="New PIN" htmlFor="new-pin">
-          <input id="new-pin" name="pin" type="password" inputMode="numeric" pattern="\d{4,8}" required autoComplete="new-password" className={inputClass} />
+          <input id="new-pin" name="pin" type="password" inputMode="numeric" pattern="\d{6,8}" required autoComplete="new-password" className={inputClass} />
         </Field>
         <Field label="Repeat new PIN" htmlFor="new-pin2">
-          <input id="new-pin2" name="pin2" type="password" inputMode="numeric" pattern="\d{4,8}" required autoComplete="new-password" className={inputClass} />
+          <input id="new-pin2" name="pin2" type="password" inputMode="numeric" pattern="\d{6,8}" required autoComplete="new-password" className={inputClass} />
         </Field>
       </div>
       <SubmitButton pending={pending} variant="secondary">Change PIN</SubmitButton>

@@ -142,3 +142,9 @@ export function formatDuration(ms: number): string {
 export function formatLongDate(date: Date, tz: string): string {
   return new Intl.DateTimeFormat("en-GB", { timeZone: tz, weekday: "long", day: "numeric", month: "long" }).format(date);
 }
+
+// For text read later (WhatsApp messages, notifications): "Sun 27 Sep, 10:00 AM", never "Today".
+export function formatWhen(date: Date, tz: string): string {
+  const day = new Intl.DateTimeFormat("en-GB", { timeZone: tz, weekday: "short", day: "numeric", month: "short" }).format(date);
+  return `${day}, ${formatTime(date, tz)}`;
+}

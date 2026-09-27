@@ -30,7 +30,10 @@ export function PhotoTile({
       </a>
       {!compact && (
         <figcaption className="space-y-1 p-3 text-sm">
-          <p className="font-semibold text-slate-800">{formatDateTime(photo.created_at, tz)}</p>
+          <p className="font-semibold text-slate-800">
+            {formatDateTime(photo.created_at, tz)}
+            {photo.user_name && <span className="font-normal text-slate-500"> · by {photo.user_name}</span>}
+          </p>
           <div className="flex flex-wrap gap-1.5">
             {photo.distance_m !== null && (
               <Badge tone={photo.on_site ? "green" : "red"}>

@@ -1,6 +1,6 @@
 import { directionsLink } from "./geo";
 import { displayPhone } from "./phone";
-import { formatDateTime } from "./time";
+import { formatWhen } from "./time";
 
 // Text for the "Send on WhatsApp" buttons. Plain text: WhatsApp renders *bold* itself.
 
@@ -22,7 +22,7 @@ export function jobMessage(job: JobForMessage, baseUrl: string, tz: string, work
     "",
     `*${job.title}*`,
   ];
-  if (job.scheduled_at) lines.push(`When: ${formatDateTime(job.scheduled_at, tz)}`);
+  if (job.scheduled_at) lines.push(`When: ${formatWhen(job.scheduled_at, tz)}`);
   if (job.address) lines.push(`Where: ${job.address}`);
   lines.push(`Directions: ${directionsLink({ lat: job.site_lat, lng: job.site_lng })}`);
   if (job.customer_name || job.customer_phone) {

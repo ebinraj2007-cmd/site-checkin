@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { apiUser, fail } from "@/lib/api";
+import { apiUser, fail, tooLarge } from "@/lib/api";
 import { deleteSubscription, isPushSubscription, saveSubscription } from "@/lib/push";
 
 export async function POST(req: Request) {
   const user = await apiUser(req);
   if (user instanceof Response) return user;
+  if (tooLarge(req, 8 * 1024)) return fail(413, "Too large.");
   const body = await req.json().catch(() => null);
   if (!isPushSubscription(body)) return fail(400, "That isn't a push subscription from a supported browser.");
   await saveSubscription(user.id, body);

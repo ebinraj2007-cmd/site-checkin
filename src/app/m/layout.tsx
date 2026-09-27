@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { logout } from "@/app/actions";
 import { ManagerNav } from "@/components/ManagerNav";
-import { buttonClass, LinkButton } from "@/components/ui";
+import { LogoutButton } from "@/components/LogoutButton";
+import { LinkButton } from "@/components/ui";
 import { requireManager } from "@/lib/auth";
 import { getSettings } from "@/lib/settings";
 
@@ -15,11 +15,8 @@ export default async function ManagerLayout({ children }: LayoutProps<"/m">) {
             {settings.companyName}
           </Link>
           <div className="ml-auto flex items-center gap-1.5">
-            <form action={logout}>
-              <button className={buttonClass("ghost")} title={`Logged in as ${me.name}`}>
-                Log out
-              </button>
-            </form>
+            <span className="hidden text-sm text-slate-500 md:inline">{me.name}</span>
+            <LogoutButton />
             <LinkButton href="/m/jobs/new">+ New job</LinkButton>
           </div>
         </div>

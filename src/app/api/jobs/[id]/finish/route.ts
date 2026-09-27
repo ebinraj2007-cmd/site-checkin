@@ -15,8 +15,9 @@ export async function POST(req: Request, ctx: RouteContext<"/api/jobs/[id]/finis
   const missing = missingSteps(job, await getJobPhotos(job.id));
   if (missing.length) return fail(409, `Before finishing, add: ${missing.join(", ")}.`);
   const done = await query(
-    "UPDATE jobs SET status = 'completed', completed_at = now(), updated_at = now() WHERE id = $1 AND status = 'arrived' RETURNING id",
-    [job.id],
+    `UPDATE jobs SET status = 'completed', completed_at = now(), updated_at = now()
+      WHERE id = $1 AND status = 'arrived' AND assigned_to = $2 RETURNING id`,
+    [job.id, user.id],
   );
   if (!done.length) return fail(409, "This job changed in the meantime. Reload the page.");
   after(() => notifyFinished(job, user.name, new Date(), user.id));

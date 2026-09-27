@@ -19,7 +19,7 @@ import { inviteMessage } from "@/lib/messages";
 import { normalizePhone, whatsappLink } from "@/lib/phone";
 import { deleteAllSubscriptions, notifyUsers } from "@/lib/push";
 import { getSettings, saveSettings, validTimezone } from "@/lib/settings";
-import { formatDateTime, localInputToDate } from "@/lib/time";
+import { formatWhen, localInputToDate } from "@/lib/time";
 
 export type FormState = {
   error?: string;
@@ -50,7 +50,8 @@ type JobInput = {
   requireSignature: boolean;
 };
 
-async function readJobForm(form: FormData): Promise<JobInput | { error: string }> {
+// `currentWorker` stays allowed when editing, even if they have since been deactivated.
+async function readJobForm(form: FormData, currentWorker: string | null = null): Promise<JobInput | { error: string }> {
   const settings = await getSettings();
   const title = text(form, "title", 120);
   const lat = Number(form.get("lat"));
@@ -67,7 +68,10 @@ async function readJobForm(form: FormData): Promise<JobInput | { error: string }
   const scheduledAt = when ? localInputToDate(when, settings.timezone) : null;
   if (when && !scheduledAt) return { error: "The date and time look wrong." };
   const worker = assignedTo
-    ? await queryOne("SELECT 1 FROM users WHERE id::text = $1 AND active", [assignedTo])
+    ? await queryOne("SELECT 1 FROM users WHERE id::text = $1 AND (active OR id::text = $2)", [
+        assignedTo,
+        currentWorker ?? "",
+      ])
     : null;
   if (!worker) return { error: "Choose who does this job." };
   if (customerPhone === null) return { error: "The customer phone number looks wrong." };
@@ -91,7 +95,7 @@ async function readJobForm(form: FormData): Promise<JobInput | { error: string }
 }
 
 function jobPush(job: Pick<Job, "id" | "title" | "address" | "scheduled_at">, title: string, tz: string) {
-  const when = job.scheduled_at ? formatDateTime(job.scheduled_at, tz) : null;
+  const when = job.scheduled_at ? formatWhen(job.scheduled_at, tz) : null;
   return {
     title,
     body: [job.title, when, job.address].filter(Boolean).join(" · "),
@@ -137,8 +141,14 @@ export async function updateJob(jobId: string, _prev: FormState, form: FormData)
   await requireManager();
   const before = await getJob(jobId);
   if (!before) return { error: "This job no longer exists." };
-  const input = await readJobForm(form);
+  const input = await readJobForm(form, before.assigned_to);
   if ("error" in input) return { error: input.error };
+  // The arrival photo belongs to whoever took it; don't hand an on-site job to someone else.
+  if (before.status === "arrived" && input.assignedTo !== before.assigned_to) {
+    return {
+      error: `${before.worker_name ?? "The worker"} is already on site for this job. To send someone else, cancel it and create a new job.`,
+    };
+  }
   const [job] = await query<Job>(
     `UPDATE jobs SET title = $2, address = $3, site_lat = $4, site_lng = $5, radius_m = $6,
             scheduled_at = $7, assigned_to = $8, customer_name = $9, customer_phone = $10,
@@ -203,12 +213,13 @@ export async function cancelJob(jobId: string) {
   revalidatePath(`/m/jobs/${jobId}`);
 }
 
-// Cancelled → back to not started. Done → back on site, so the worker can add what's missing.
+// Cancelled → back to not started (or on site, if the worker had already arrived).
+// Done → back on site, so the worker can add what's missing.
 export async function reopenJob(jobId: string) {
   await requireManager();
   const [job] = await query<Job>(
     `UPDATE jobs
-        SET status = CASE WHEN status = 'cancelled' THEN 'assigned' ELSE 'arrived' END,
+        SET status = CASE WHEN status = 'cancelled' AND arrived_at IS NULL THEN 'assigned' ELSE 'arrived' END,
             completed_at = NULL, left_at = NULL, updated_at = now()
       WHERE id = $1 AND status IN ('cancelled', 'completed') RETURNING *`,
     [jobId],
@@ -231,7 +242,7 @@ export async function createWorker(_prev: FormState, form: FormData): Promise<Fo
   const pin = text(form, "pin", 8) || randomPin();
   if (!name) return { error: "Enter the worker's name." };
   if (!phone) return { error: "Enter a valid mobile number." };
-  if (!isValidPin(pin)) return { error: "The PIN must be 4 to 8 digits." };
+  if (!isValidPin(pin)) return { error: "The PIN must be 6 to 8 digits." };
   const taken = await queryOne("SELECT 1 FROM users WHERE phone = $1", [phone]);
   if (taken) return { error: "Someone with this phone number is already added." };
   await query("INSERT INTO users (name, phone, role, pin_hash) VALUES ($1, $2, $3, $4)", [
@@ -279,7 +290,7 @@ export async function resetPin(userId: string, _prev: FormState, form: FormData)
   await requireManager();
   const settings = await getSettings();
   const pin = text(form, "pin", 8) || randomPin();
-  if (!isValidPin(pin)) return { error: "The PIN must be 4 to 8 digits." };
+  if (!isValidPin(pin)) return { error: "The PIN must be 6 to 8 digits." };
   const user = await queryOne<{ name: string; phone: string }>(
     "UPDATE users SET pin_hash = $2, failed_logins = 0, locked_until = NULL WHERE id = $1 RETURNING name, phone",
     [userId, await hashPin(pin)],
@@ -310,6 +321,7 @@ export async function saveSettingsAction(_prev: FormState, form: FormData): Prom
   const timezone = validTimezone(text(form, "timezone", 64));
   const defaultRadius = Math.round(Number(form.get("defaultRadius")));
   if (!companyName) return { error: "Enter the company name." };
+  if (!countryCode) return { error: "Enter your country code, e.g. 971." };
   if (!timezone) return { error: "Choose a valid timezone." };
   if (!(defaultRadius >= 20 && defaultRadius <= 5000)) {
     return { error: "Check-in distance must be between 20 m and 5 km." };
@@ -326,7 +338,7 @@ export async function changeMyPin(_prev: FormState, form: FormData): Promise<For
   const pin2 = text(form, "pin2", 8);
   const row = await queryOne<{ pin_hash: string }>("SELECT pin_hash FROM users WHERE id = $1", [me.id]);
   if (!row || !(await verifyPin(current, row.pin_hash))) return { error: "Your current PIN is wrong." };
-  if (!isValidPin(pin)) return { error: "The new PIN must be 4 to 8 digits." };
+  if (!isValidPin(pin)) return { error: "The new PIN must be 6 to 8 digits." };
   if (pin !== pin2) return { error: "The new PINs don't match." };
   await query("UPDATE users SET pin_hash = $2 WHERE id = $1", [me.id, await hashPin(pin)]);
   return { ok: true, message: "PIN changed." };

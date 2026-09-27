@@ -35,6 +35,7 @@ export function JobForm({
   fallbackCenter,
   timezone,
   submitLabel,
+  workerLocked,
 }: {
   action: (state: FormState, form: FormData) => Promise<FormState>;
   workers: WorkerOption[];
@@ -42,6 +43,7 @@ export function JobForm({
   fallbackCenter: LatLng | null;
   timezone: string;
   submitLabel: string;
+  workerLocked?: string;
 }) {
   const [state, onSubmit, pending] = useFormAction(action, null);
   const [radius, setRadius] = useState(defaults.radius);
@@ -68,11 +70,12 @@ export function JobForm({
             label="Worker"
             htmlFor="assigned_to"
             hint={
-              worker
+              workerLocked ??
+              (worker
                 ? worker.alerts
                   ? "Gets a phone notification when you save."
                   : "Hasn't turned on job alerts yet. Send the job on WhatsApp after saving."
-                : undefined
+                : undefined)
             }
           >
             <select
@@ -81,6 +84,7 @@ export function JobForm({
               required
               value={workerId}
               onChange={(e) => setWorkerId(e.target.value)}
+              disabled={!!workerLocked}
               className={inputClass}
             >
               <option value="">Choose…</option>
@@ -91,6 +95,7 @@ export function JobForm({
                 </option>
               ))}
             </select>
+            {workerLocked && <input type="hidden" name="assigned_to" value={workerId} />}
           </Field>
           <Field label="Date & time" htmlFor="scheduled_at" hint={`Optional. Times are in ${timezone}.`}>
             <input

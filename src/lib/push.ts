@@ -125,7 +125,8 @@ export async function notifyUsers(userIds: string[], payload: PushPayload): Prom
         sent++;
       } catch (err) {
         const status = (err as { statusCode?: number }).statusCode;
-        if (status === 404 || status === 410) {
+        // 404/410: the browser dropped it. 401/403: it was made for other server keys.
+        if (status === 404 || status === 410 || status === 401 || status === 403) {
           await query("DELETE FROM push_subscriptions WHERE endpoint = $1", [s.endpoint]);
         } else {
           console.error(`Push to ${new URL(s.endpoint).host} failed:`, status ?? (err as Error).message);

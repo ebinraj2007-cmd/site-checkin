@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse, after } from "next/server";
-import { apiUser, fail, numberField } from "@/lib/api";
+import { apiUser, fail, numberField, tooLarge } from "@/lib/api";
 import { notifyArrival, notifyFinished } from "@/lib/checkin-notify";
 import { transaction } from "@/lib/db";
 import { checkOnSite, isValidLatLng } from "@/lib/geo";
@@ -14,6 +14,7 @@ const MAX_BYTES = 8 * 1024 * 1024;
 export async function POST(req: Request, ctx: RouteContext<"/api/jobs/[id]/photo">) {
   const user = await apiUser(req);
   if (user instanceof Response) return user;
+  if (tooLarge(req, MAX_BYTES + 64 * 1024)) return fail(413, "The photo is too large.");
   const job = await getJob((await ctx.params).id);
   if (!job || job.assigned_to !== user.id) return fail(404, "This job isn't assigned to you.");
 
@@ -64,16 +65,20 @@ export async function POST(req: Request, ctx: RouteContext<"/api/jobs/[id]/photo
     const moved =
       kind === "arrival"
         ? await q.query(
-            "UPDATE jobs SET status = 'arrived', arrived_at = now(), updated_at = now() WHERE id = $1 AND status = 'assigned' RETURNING id",
-            [job.id],
+            `UPDATE jobs SET status = 'arrived', arrived_at = now(), updated_at = now()
+              WHERE id = $1 AND status = 'assigned' AND assigned_to = $2 RETURNING id`,
+            [job.id, user.id],
           )
         : kind === "leave"
           ? await q.query(
               `UPDATE jobs SET status = 'completed', left_at = now(), completed_at = now(), updated_at = now()
-                WHERE id = $1 AND status = 'arrived' RETURNING id`,
-              [job.id],
+                WHERE id = $1 AND status = 'arrived' AND assigned_to = $2 RETURNING id`,
+              [job.id, user.id],
             )
-          : await q.query("SELECT id FROM jobs WHERE id = $1 AND status = 'arrived'", [job.id]);
+          : await q.query("SELECT id FROM jobs WHERE id = $1 AND status = 'arrived' AND assigned_to = $2", [
+              job.id,
+              user.id,
+            ]);
     if (!moved.length) return false;
     await q.query(
       `INSERT INTO job_photos (id, job_id, user_id, kind, file_key, lat, lng, accuracy_m, distance_m,

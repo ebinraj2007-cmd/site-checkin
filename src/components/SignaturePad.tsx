@@ -6,6 +6,7 @@ import { buttonClass, inputClass } from "./ui";
 // Customer signs with a finger; saved as a PNG with the typed name.
 export function SignaturePad({ jobId, onSaved }: { jobId: string; onSaved: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const ratio = useRef(1);
   const drawing = useRef(false);
   const last = useRef<{ x: number; y: number } | null>(null);
   const [inked, setInked] = useState(false);
@@ -16,21 +17,27 @@ export function SignaturePad({ jobId, onSaved }: { jobId: string; onSaved: () =>
   // Size the canvas to its box at device pixel ratio so strokes stay sharp.
   useEffect(() => {
     const canvas = canvasRef.current!;
-    const ratio = window.devicePixelRatio || 1;
+    ratio.current = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
-    canvas.width = Math.round(rect.width * ratio);
-    canvas.height = Math.round(rect.height * ratio);
+    canvas.width = Math.round(rect.width * ratio.current);
+    canvas.height = Math.round(rect.height * ratio.current);
     const ctx = canvas.getContext("2d")!;
-    ctx.scale(ratio, ratio);
+    ctx.scale(ratio.current, ratio.current);
     ctx.lineWidth = 2.5;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.strokeStyle = "#0f172a";
   }, []);
 
+  // Finger position in drawing units. The canvas keeps the size it had at setup; if the
+  // phone rotates, CSS stretches it, so scale by the box's current size.
   function point(e: React.PointerEvent<HTMLCanvasElement>) {
-    const rect = e.currentTarget.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const canvas = e.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: ((e.clientX - rect.left) * canvas.width) / ratio.current / rect.width,
+      y: ((e.clientY - rect.top) * canvas.height) / ratio.current / rect.height,
+    };
   }
 
   function down(e: React.PointerEvent<HTMLCanvasElement>) {

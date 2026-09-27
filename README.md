@@ -33,15 +33,19 @@ No app store: workers open a link and add it to their home screen.
 
 ## How a check-in is protected
 
-- **Live camera only.** Photos come from the camera preview, not the gallery. If a phone
-  can't open the live camera, it falls back to the phone's camera app and the photo is marked
-  "Not live camera" for the manager.
+- **Live camera only.** The app takes photos from the camera preview and offers no gallery
+  picker. If a phone can't open the live camera, it falls back to the phone's camera app and
+  the photo is marked "Not live camera" for the manager. (Someone who builds requests by hand
+  could still upload any picture; the location check applies to it all the same.)
 - **GPS checked twice.** The phone checks the distance to guide the worker; the server checks
   it again on upload and its answer counts. Readings less accurate than ±200 m are refused.
 - **Stamped.** The job, time, worker, coordinates and distance are burned into the photo. The
   server also records its own time, the coordinates, the accuracy and the distance.
-- **Limit:** no web app can detect a fake-GPS app on a phone set up to spoof its location. The
-  photo itself (what's in it, and where the map dot is) is the evidence to look at.
+- **Limit:** the location comes from the phone, and no web app can detect a fake-GPS app on a
+  phone set up to spoof its location. The photo itself (what's in it, and where the map dot
+  is) is the evidence to look at.
+- **Logins:** 6–8 digit PINs; after 5 wrong PINs the number is locked for 15 minutes, even
+  when guesses are sent all at once.
 
 ## Put it online (about 15 minutes)
 

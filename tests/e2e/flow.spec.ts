@@ -52,8 +52,8 @@ test("manager sets up the company", async () => {
   await manager.getByLabel("Your name").fill("Maya Manager");
   await manager.getByLabel("Country code").fill("971");
   await manager.getByLabel("Your mobile number").fill("050 111 1111");
-  await manager.getByLabel("Choose a PIN").fill("1234");
-  await manager.getByLabel("Repeat PIN").fill("1234");
+  await manager.getByLabel("Choose a PIN").fill("482615");
+  await manager.getByLabel("Repeat PIN").fill("482615");
   await expect(manager.getByText("Asia/Dubai")).toBeVisible();
   await shot(manager, "01-setup");
   await manager.getByRole("button", { name: "Create my account" }).click();
@@ -69,13 +69,13 @@ test("manager adds a worker and gets a WhatsApp invite", async () => {
   await manager.goto("/m/workers");
   await manager.getByLabel("Name", { exact: true }).fill("Ravi Kumar");
   await manager.getByLabel("Mobile number").fill("050 222 2222");
-  await manager.getByLabel("PIN", { exact: true }).fill("5678");
+  await manager.getByLabel("PIN", { exact: true }).fill("246810");
   await manager.getByRole("button", { name: "Add worker" }).click();
-  await expect(manager.getByText("Ravi Kumar added. PIN: 5678")).toBeVisible();
+  await expect(manager.getByText("Ravi Kumar added. PIN: 246810")).toBeVisible();
   const invite = manager.getByRole("link", { name: /Send login on WhatsApp/ });
   const href = await invite.getAttribute("href");
   expect(href).toMatch(/^https:\/\/wa\.me\/971502222222\?text=/);
-  expect(decodeURIComponent(href!)).toContain("PIN: 5678");
+  expect(decodeURIComponent(href!)).toContain("PIN: 246810");
   await expect(manager.getByRole("link", { name: /Ravi Kumar/ })).toBeVisible();
 
   // Same number twice is refused.
@@ -111,17 +111,17 @@ test("manager creates a job with every proof step", async () => {
   expect(wa).toMatch(/^https:\/\/wa\.me\/971502222222\?/);
   expect(text).toContain(`*${JOB_TITLE}*`);
   expect(text).toContain(`/w/jobs/${jobId}`);
-  expect(text).toContain("Customer: Ali Hassan, +971553334444");
+  expect(text).toContain("Customer: Ali Hassan, +971 55 333 4444");
   await expect(manager.getByText("Waiting for the arrival photo.")).toBeVisible();
 });
 
 test("worker logs in and sees the job", async () => {
   await worker.goto("/login");
   await worker.getByLabel("Phone number").fill("0502222222");
-  await worker.getByLabel("PIN").fill("0000");
+  await worker.getByLabel("PIN").fill("000000");
   await worker.getByRole("button", { name: "Log in" }).click();
   await expect(worker.getByText("Wrong phone number or PIN.")).toBeVisible();
-  await worker.getByLabel("PIN").fill("5678");
+  await worker.getByLabel("PIN").fill("246810");
   await worker.getByRole("button", { name: "Log in" }).click();
   await expect(worker).toHaveURL(/\/w$/);
   await expect(worker.getByText("Job alerts are off.")).toBeVisible();
@@ -205,6 +205,7 @@ test("worker checks in on site and completes every step", async () => {
 
   await worker.getByLabel("Customer's name").fill("Ali Hassan");
   const pad = worker.getByLabel("Signature box");
+  await pad.scrollIntoViewIfNeeded(); // mouse coordinates only reach what's on screen
   const box = (await pad.boundingBox())!;
   await worker.mouse.move(box.x + 30, box.y + box.height * 0.6);
   await worker.mouse.down();
@@ -256,6 +257,43 @@ test("manager sees the proof and exports it", async () => {
   expect(csv.split("\r\n")[1]).toContain(",Done,");
 });
 
+test("an on-site job stays with its worker, and reopening keeps the check-in", async () => {
+  await manager.goto("/m/jobs/new");
+  await manager.getByLabel("Job title").fill("Pump repair");
+  await manager.getByLabel("Worker", { exact: true }).selectOption({ label: "Ravi Kumar" });
+  await manager.getByLabel("Paste a Google Maps link or coordinates").fill(`${SITE.latitude}, ${SITE.longitude}`);
+  await manager.getByRole("button", { name: "Create job & notify worker" }).click();
+  await expect(manager).toHaveURL(/created=1/);
+  const id = manager.url().match(/jobs\/([0-9a-f-]{36})/)![1];
+
+  const arrived = await worker.request.post(`/api/jobs/${id}/photo`, {
+    multipart: {
+      kind: "arrival",
+      lat: String(NEAR.latitude),
+      lng: String(NEAR.longitude),
+      accuracy: "12",
+      live: "1",
+      photo: { name: "photo.jpg", mimeType: "image/jpeg", buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]) },
+    },
+  });
+  expect(arrived.status()).toBe(200);
+
+  await manager.goto(`/m/jobs/${id}/edit`);
+  await expect(manager.getByText("Ravi Kumar is on site now.")).toBeVisible();
+  await expect(manager.getByLabel("Worker", { exact: true })).toBeDisabled();
+
+  await manager.goto(`/m/jobs/${id}`);
+  manager.once("dialog", (d) => d.accept());
+  await manager.getByRole("button", { name: "Cancel job" }).click();
+  await expect(manager.getByText("This job was cancelled.")).toBeVisible();
+  manager.once("dialog", (d) => d.accept());
+  await manager.getByRole("button", { name: "Reopen" }).click();
+  await expect(manager.getByText("On site", { exact: true })).toBeVisible();
+
+  await worker.goto(`/w/jobs/${id}`);
+  await expect(worker.getByRole("button", { name: "✓ Finish job" })).toBeEnabled();
+});
+
 test("access rules and push subscriptions", async ({ browser }) => {
   // Photos are private.
   const anon = await browser.newContext();
@@ -301,12 +339,12 @@ test("five wrong PINs lock the account for a while", async ({ browser }) => {
   await page.goto("/login");
   for (let i = 0; i < 5; i++) {
     await page.getByLabel("Phone number").fill("0502222222");
-    await page.getByLabel("PIN").fill("9999");
+    await page.getByLabel("PIN").fill("999999");
     await page.getByRole("button", { name: "Log in" }).click();
     await expect(page.getByRole("button", { name: "Log in" })).toBeEnabled();
   }
   await expect(page.getByText("Too many wrong PINs")).toBeVisible();
-  await page.getByLabel("PIN").fill("5678");
+  await page.getByLabel("PIN").fill("246810");
   await page.getByRole("button", { name: "Log in" }).click();
   await expect(page.getByText("Too many wrong PINs")).toBeVisible();
   await ctx.close();

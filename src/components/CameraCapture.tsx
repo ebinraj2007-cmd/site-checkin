@@ -73,8 +73,16 @@ export function CameraCapture({
         if (video) {
           video.srcObject = stream;
           await video.play().catch(() => {});
+          // play() can resolve before the first frame; the shutter waits for a picture.
+          if (!(await firstFrame(video))) {
+            if (!cancelled) {
+              stopCamera();
+              setCamera("failed");
+            }
+            return;
+          }
         }
-        setCamera("live");
+        if (!cancelled) setCamera("live");
       } catch {
         if (!cancelled) setCamera("failed");
       }
@@ -146,7 +154,10 @@ export function CameraCapture({
 
   async function shoot() {
     const video = videoRef.current;
-    if (!video || !video.videoWidth) return;
+    if (!video || !(await firstFrame(video))) {
+      setError("The camera isn't ready yet. Try again in a moment.");
+      return;
+    }
     setError(null);
     await makeShot(video, video.videoWidth, video.videoHeight, true);
     stopCamera();
@@ -277,6 +288,15 @@ export function CameraCapture({
       </div>
     </div>
   );
+}
+
+// True once the video has a frame to capture; false if none comes within 5 seconds.
+async function firstFrame(video: HTMLVideoElement): Promise<boolean> {
+  for (let waited = 0; waited <= 5000; waited += 100) {
+    if (video.videoWidth > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
 }
 
 function GpsChip({

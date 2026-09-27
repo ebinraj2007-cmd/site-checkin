@@ -56,9 +56,9 @@ describe("jobMessage", () => {
     );
     expect(text).toContain("Hi Ravi");
     expect(text).toContain("*AC service*");
-    expect(text).toContain("10:00 AM");
+    expect(text).toMatch(/When: Sun 27 Sept?, 10:00 AM/); // a date, not "Today": it's read later
     expect(text).toContain("destination=25.2,55.27");
-    expect(text).toContain("Customer: Ali, +971500000000");
+    expect(text).toContain("Customer: Ali, +971 50 000 0000");
     expect(text).toContain("https://checkin.example.com/w/jobs/abc");
   });
 });

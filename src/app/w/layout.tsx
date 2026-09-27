@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { logout } from "@/app/actions";
+import { LogoutButton } from "@/components/LogoutButton";
 import { buttonClass } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { getSettings } from "@/lib/settings";
@@ -19,9 +19,7 @@ export default async function WorkerLayout({ children }: LayoutProps<"/w">) {
               Manager
             </Link>
           )}
-          <form action={logout}>
-            <button className={buttonClass("ghost")}>Log out</button>
-          </form>
+          <LogoutButton />
         </div>
       </header>
       <main className="mx-auto max-w-xl px-4 py-4">{children}</main>
