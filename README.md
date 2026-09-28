@@ -58,8 +58,9 @@ You need a free [Vercel](https://vercel.com) account and a free
    Keep the default variable names (no custom prefix). This adds `POSTGRES_URL`,
    `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
 3. **Deployments → ⋯ → Redeploy.**
-4. Open the site straight away and create your manager account. The first person to open a
-   new deployment becomes its manager.
+4. Open the site and create your manager account. Set a `SETUP_CODE` environment variable
+   first (any random text) and enter it on the setup page; without one, the first person to
+   open a new deployment becomes its manager.
 5. **Workers →** add each worker → **Send login on WhatsApp**. They open the link, log in,
    add it to their home screen and tap **Turn on job alerts**.
 
@@ -80,6 +81,7 @@ OpenStreetMap's free services, which are meant for light use.
 | `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` | optional | Keep photos in a private Supabase Storage bucket. Without them, photos are stored in the database. If an upload to Supabase fails, the photo goes to the database instead. |
 | `SUPABASE_BUCKET` | optional | Bucket name, default `site-checkin`. |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | optional | Push notification keys. Generated and stored in the database if not set. |
+| `SETUP_CODE` | recommended | A secret the first-time setup page asks for, so nobody else can claim a fresh deployment. Only used until the first manager exists. |
 | `APP_URL` | optional | Base URL used in WhatsApp messages. Defaults to the Vercel production domain. |
 
 ## On the phones

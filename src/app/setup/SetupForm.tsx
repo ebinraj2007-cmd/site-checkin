@@ -8,7 +8,7 @@ import { setupAction } from "./actions";
 
 const detectTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
-export function SetupForm() {
+export function SetupForm({ needsCode }: { needsCode: boolean }) {
   const [state, onSubmit, pending] = useFormAction(setupAction, null);
   // The browser's timezone becomes the company timezone (changeable in Settings).
   const timezone = useSyncExternalStore(
@@ -19,6 +19,11 @@ export function SetupForm() {
   return (
     <Card>
       <form onSubmit={onSubmit} className="space-y-4">
+        {needsCode && (
+          <Field label="Setup code" htmlFor="setupCode" hint="From whoever put this app online. Only needed once.">
+            <input id="setupCode" name="setupCode" required autoComplete="off" className={inputClass} />
+          </Field>
+        )}
         <Field label="Company name" htmlFor="company">
           <input id="company" name="company" required maxLength={80} className={inputClass} placeholder="e.g. Cool Air Services" />
         </Field>

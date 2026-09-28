@@ -18,7 +18,7 @@ export default async function SetupPage() {
           You&apos;ll be the manager. After this you can add your workers and send them jobs.
         </p>
       </div>
-      <SetupForm />
+      <SetupForm needsCode={!!process.env.SETUP_CODE} />
     </main>
   );
 }

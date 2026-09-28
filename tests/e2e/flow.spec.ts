@@ -55,6 +55,10 @@ test("manager sets up the company", async () => {
   await manager.getByLabel("Choose a PIN").fill("482615");
   await manager.getByLabel("Repeat PIN").fill("482615");
   await expect(manager.getByText("Asia/Dubai")).toBeVisible();
+  await manager.getByLabel("Setup code").fill("guess");
+  await manager.getByRole("button", { name: "Create my account" }).click();
+  await expect(manager.getByText("That setup code is wrong.")).toBeVisible();
+  await manager.getByLabel("Setup code").fill("e2e-setup-code");
   await shot(manager, "01-setup");
   await manager.getByRole("button", { name: "Create my account" }).click();
   await expect(manager).toHaveURL(/\/m$/);

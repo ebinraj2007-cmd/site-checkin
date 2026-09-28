@@ -47,6 +47,7 @@ export default defineConfig({
       reuseExistingServer: false,
       timeout: 120_000,
       env: {
+        SETUP_CODE: "e2e-setup-code",
         ...(process.env.E2E_DATABASE_URL
           ? { DATABASE_URL: process.env.E2E_DATABASE_URL }
           : { PGLITE_DIR: path.join(os.tmpdir(), `site-checkin-e2e-${Date.now()}`) }),

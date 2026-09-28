@@ -1,5 +1,6 @@
 "use server";
 
+import { timingSafeEqual } from "node:crypto";
 import { redirect } from "next/navigation";
 import { hashPin, isValidPin, startSession } from "@/lib/auth";
 import { transaction } from "@/lib/db";
@@ -8,7 +9,18 @@ import { validTimezone } from "@/lib/settings";
 
 export type SetupState = { error?: string } | null;
 
+// When SETUP_CODE is set (it should be on any public deployment), only someone who has
+// it can create the first manager account.
+function setupCodeOk(given: string): boolean {
+  const expected = process.env.SETUP_CODE;
+  if (!expected) return true;
+  const a = Buffer.from(given.trim());
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 export async function setupAction(_prev: SetupState, form: FormData): Promise<SetupState> {
+  if (!setupCodeOk(String(form.get("setupCode") ?? ""))) return { error: "That setup code is wrong." };
   const company = String(form.get("company") ?? "").trim().slice(0, 80);
   const name = String(form.get("name") ?? "").trim().slice(0, 80);
   const countryCode = String(form.get("countryCode") ?? "").replace(/\D/g, "").slice(0, 4);
