@@ -6,3 +6,8 @@ test-results
 playwright-report
 *.tsbuildinfo
 .env*
+# Tests and docs aren't needed to build or run the app
+tests
+playwright.config.ts
+vitest.config.mts
+*.md
