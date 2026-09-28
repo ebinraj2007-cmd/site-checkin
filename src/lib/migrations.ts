@@ -95,4 +95,34 @@ CREATE TABLE files (
 );
 `,
   },
+  {
+    id: 2,
+    // Supabase publishes the public schema through its REST API to anyone holding the
+    // project's anon key. This app only reaches the database from its own server (as the
+    // tables' owner, which row level security doesn't apply to), so shut that door:
+    // RLS on with no policies, and no grants for the API roles. Harmless elsewhere.
+    sql: `
+DO $$
+DECLARE
+  t text;
+  r text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['settings', 'users', 'sessions', 'push_subscriptions', 'jobs', 'job_photos', 'files', 'schema_migrations'] LOOP
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
+  END LOOP;
+  FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+    CONTINUE WHEN NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r);
+    FOREACH t IN ARRAY ARRAY['settings', 'users', 'sessions', 'push_subscriptions', 'jobs', 'job_photos', 'files', 'schema_migrations'] LOOP
+      EXECUTE format('REVOKE ALL ON TABLE public.%I FROM %I', t, r);
+    END LOOP;
+    -- Tables added by later migrations start closed too.
+    BEGIN
+      EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM %I', r);
+    EXCEPTION WHEN insufficient_privilege THEN
+      RAISE WARNING 'could not change default privileges for %', r;
+    END;
+  END LOOP;
+END $$;
+`,
+  },
 ];
