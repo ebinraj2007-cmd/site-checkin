@@ -6,6 +6,8 @@ import { after } from "next/server";
 import { appUrl } from "@/lib/app-url";
 import {
   endAllSessions,
+  endOtherSessions,
+  forgetDevices,
   hashPin,
   isValidPin,
   randomPin,
@@ -141,20 +143,23 @@ export async function updateJob(jobId: string, _prev: FormState, form: FormData)
   await requireManager();
   const before = await getJob(jobId);
   if (!before) return { error: "This job no longer exists." };
+  if (before.status !== "assigned" && before.status !== "arrived") {
+    return { error: "This job is closed. Reopen it to make changes." };
+  }
   const input = await readJobForm(form, before.assigned_to);
   if ("error" in input) return { error: input.error };
-  // The arrival photo belongs to whoever took it; don't hand an on-site job to someone else.
-  if (before.status === "arrived" && input.assignedTo !== before.assigned_to) {
-    return {
-      error: `${before.worker_name ?? "The worker"} is already on site for this job. To send someone else, cancel it and create a new job.`,
-    };
-  }
+  // The arrival photo belongs to whoever took it; don't hand a checked-in job to someone else.
+  const onSiteError = `${before.worker_name ?? "The worker"} has already checked in on this job. To send someone else, cancel it and create a new job.`;
+  if (before.arrived_at && input.assignedTo !== before.assigned_to) return { error: onSiteError };
+  // The same rules again in the UPDATE, in case the worker checked in meanwhile.
   const [job] = await query<Job>(
     `UPDATE jobs SET title = $2, address = $3, site_lat = $4, site_lng = $5, radius_m = $6,
             scheduled_at = $7, assigned_to = $8, customer_name = $9, customer_phone = $10,
             instructions = $11, require_leave_photo = $12, require_work_photos = $13,
             require_notes = $14, require_signature = $15, updated_at = now()
-      WHERE id = $1 RETURNING *`,
+      WHERE id = $1 AND status IN ('assigned', 'arrived')
+        AND (arrived_at IS NULL OR assigned_to IS NOT DISTINCT FROM $8::uuid)
+      RETURNING *`,
     [
       jobId,
       input.title,
@@ -173,6 +178,11 @@ export async function updateJob(jobId: string, _prev: FormState, form: FormData)
       input.requireSignature,
     ],
   );
+  if (!job) {
+    const current = await getJob(jobId);
+    const stillOpen = current?.status === "assigned" || current?.status === "arrived";
+    return { error: stillOpen ? onSiteError : "This job was closed meanwhile. Reopen it to make changes." };
+  }
   const open = job.status === "assigned" || job.status === "arrived";
   if (open) {
     const { timezone } = await getSettings();
@@ -213,14 +223,14 @@ export async function cancelJob(jobId: string) {
   revalidatePath(`/m/jobs/${jobId}`);
 }
 
-// Cancelled → back to not started (or on site, if the worker had already arrived).
-// Done → back on site, so the worker can add what's missing.
+// Cancelled or done → a new visit: the worker checks in again with a new arrival photo,
+// so time on site never stretches across the time the job was closed. Photos from the
+// earlier visit stay on record; notes and the signature carry over.
 export async function reopenJob(jobId: string) {
   await requireManager();
   const [job] = await query<Job>(
     `UPDATE jobs
-        SET status = CASE WHEN status = 'cancelled' AND arrived_at IS NULL THEN 'assigned' ELSE 'arrived' END,
-            completed_at = NULL, left_at = NULL, updated_at = now()
+        SET status = 'assigned', arrived_at = NULL, left_at = NULL, completed_at = NULL, updated_at = now()
       WHERE id = $1 AND status IN ('cancelled', 'completed') RETURNING *`,
     [jobId],
   );
@@ -277,10 +287,7 @@ export async function updateWorker(userId: string, _prev: FormState, form: FormD
     role,
     active,
   ]);
-  if (!active) {
-    await endAllSessions(userId);
-    await deleteAllSubscriptions(userId);
-  }
+  if (!active) await cutOff(userId);
   revalidatePath(`/m/workers/${userId}`);
   revalidatePath("/m/workers");
   return { ok: true, message: "Saved." };
@@ -296,7 +303,7 @@ export async function resetPin(userId: string, _prev: FormState, form: FormData)
     [userId, await hashPin(pin)],
   );
   if (!user) return { error: "Worker not found." };
-  await endAllSessions(userId); // a lost phone stays logged out
+  await cutOff(userId); // a lost phone stays logged out and gets no more job alerts
   const message = inviteMessage({
     name: user.name,
     company: settings.companyName,
@@ -341,5 +348,17 @@ export async function changeMyPin(_prev: FormState, form: FormData): Promise<For
   if (!isValidPin(pin)) return { error: "The new PIN must be 6 to 8 digits." };
   if (pin !== pin2) return { error: "The new PINs don't match." };
   await query("UPDATE users SET pin_hash = $2 WHERE id = $1", [me.id, await hashPin(pin)]);
-  return { ok: true, message: "PIN changed." };
+  // In case the old PIN went with a lost phone: only this browser stays logged in. It
+  // registers for alerts again by itself (ChangePinForm).
+  await endOtherSessions(me.id);
+  await deleteAllSubscriptions(me.id);
+  await forgetDevices(me.id, { keepThisOne: true });
+  return { ok: true, message: "PIN changed. You're logged out on every other device, and they no longer get alerts." };
+}
+
+// Logs someone out everywhere and stops alerts to their devices.
+async function cutOff(userId: string) {
+  await endAllSessions(userId);
+  await deleteAllSubscriptions(userId);
+  await forgetDevices(userId);
 }

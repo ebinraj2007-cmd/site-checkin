@@ -4,7 +4,15 @@ import { useEffect, useRef, useState } from "react";
 import { buttonClass, inputClass } from "./ui";
 
 // Customer signs with a finger; saved as a PNG with the typed name.
-export function SignaturePad({ jobId, onSaved }: { jobId: string; onSaved: () => void }) {
+export function SignaturePad({
+  jobId,
+  onSaved,
+  onConflict,
+}: {
+  jobId: string;
+  onSaved: () => void;
+  onConflict: (message: string) => void;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ratio = useRef(1);
   const drawing = useRef(false);
@@ -96,6 +104,7 @@ export function SignaturePad({ jobId, onSaved }: { jobId: string; onSaved: () =>
       form.set("signature", blob, "signature.png");
       const res = await fetch(`/api/jobs/${jobId}/signature`, { method: "POST", body: form });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 409 || res.status === 404) return onConflict(data.error ?? "This job changed in the meantime.");
       if (!res.ok) throw new Error(data.error ?? "Saving failed.");
       onSaved();
     } catch (e) {

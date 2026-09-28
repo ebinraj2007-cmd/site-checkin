@@ -50,8 +50,19 @@ export async function getVapidPublicKey(): Promise<string> {
 }
 
 // The server POSTs to whatever endpoint a browser hands over, so only accept the
-// browser vendors' push services (Chrome/Android, Firefox, Safari/iPhone, Edge).
-const PUSH_HOSTS = ["googleapis.com", "push.services.mozilla.com", "push.apple.com", "notify.windows.com"];
+// browser vendors' push services: Chrome/Android (FCM), Firefox, Safari/iPhone, and Edge
+// (Windows push, which uses many numbered hosts under notify.windows.com).
+const PUSH_HOSTS = new Set([
+  "fcm.googleapis.com",
+  "android.googleapis.com",
+  "updates.push.services.mozilla.com",
+  "web.push.apple.com",
+]);
+const PUSH_HOST_SUFFIX = ".notify.windows.com";
+
+// Devices kept per person. Each notification goes to all of them, so the list can't be
+// allowed to grow without limit; the least recently registered go first.
+const MAX_DEVICES = 10;
 
 export function isPushSubscription(value: unknown): value is PushSubscriptionJSON {
   const v = value as PushSubscriptionJSON;
@@ -67,7 +78,8 @@ export function isPushSubscription(value: unknown): value is PushSubscriptionJSO
   }
   return (
     url.protocol === "https:" &&
-    PUSH_HOSTS.some((h) => url.hostname === h || url.hostname.endsWith(`.${h}`))
+    url.port === "" &&
+    (PUSH_HOSTS.has(url.hostname) || url.hostname.endsWith(PUSH_HOST_SUFFIX))
   );
 }
 
@@ -75,12 +87,18 @@ function base64UrlBytes(value: string): number {
   return /^[A-Za-z0-9_-]+={0,2}$/.test(value) ? Buffer.from(value, "base64url").length : -1;
 }
 
+// Phones re-register on every visit, which also marks them as recently used.
 export async function saveSubscription(userId: string, sub: PushSubscriptionJSON) {
   await query(
     `INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth) VALUES ($1, $2, $3, $4)
      ON CONFLICT (endpoint) DO UPDATE
-       SET user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth`,
+       SET user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, created_at = now()`,
     [sub.endpoint, userId, sub.keys.p256dh, sub.keys.auth],
+  );
+  await query(
+    `DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint NOT IN (
+       SELECT endpoint FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2)`,
+    [userId, MAX_DEVICES],
   );
 }
 

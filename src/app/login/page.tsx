@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { getSessionUser, hasAnyUser } from "@/lib/auth";
@@ -22,7 +23,14 @@ export default async function LoginPage() {
         <p className="mt-1 text-sm text-slate-500">Log in with your phone number and PIN</p>
       </div>
       <LoginForm />
-      <p className="mt-6 text-center text-xs text-slate-500">Forgot your PIN? Ask your manager to reset it.</p>
+      <p className="mt-6 text-center text-xs text-slate-500">
+        Forgot your PIN? Ask your manager to reset it.
+        <br />
+        Manager and can&apos;t get in?{" "}
+        <Link href="/recover" className="font-semibold text-slate-700 underline">
+          Use the setup code
+        </Link>
+      </p>
     </main>
   );
 }

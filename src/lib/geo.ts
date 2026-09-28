@@ -59,6 +59,26 @@ export function isValidLatLng(lat: number, lng: number): boolean {
 const PAIR = "(-?\\d{1,2}(?:\\.\\d+)?)\\s*,\\s*(-?\\d{1,3}(?:\\.\\d+)?)";
 
 // Accepts "25.2048, 55.2708" or a Google Maps link that contains coordinates.
+// The hosts /api/geocode may fetch while expanding a short link (maps.app.goo.gl) to the
+// map page it points to. Coordinates in any other link are read without fetching it.
+const GOOGLE_MAPS_HOSTS = new Set([
+  "maps.app.goo.gl",
+  "goo.gl",
+  "google.com",
+  "www.google.com",
+  "maps.google.com",
+  "consent.google.com",
+]);
+
+export function isGoogleMapsFetchable(link: string): boolean {
+  try {
+    const url = new URL(link);
+    return url.protocol === "https:" && url.port === "" && GOOGLE_MAPS_HOSTS.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 // Short links (maps.app.goo.gl) must be expanded first; see /api/geocode.
 export function parseLocation(input: string): LatLng | null {
   const text = decodeURIComponentSafe(input.trim());

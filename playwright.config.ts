@@ -12,6 +12,18 @@ const FAKE_SUPABASE_PORT = 3299;
 const proxy = process.env.HTTPS_PROXY;
 const fakeSupabase = !!process.env.E2E_FAKE_SUPABASE;
 
+// The app server's environment. Blank values win over a pulled .env.local, so the tests
+// never reach a real database or bucket.
+const serverEnv: Record<string, string> = {
+  SETUP_CODE: "e2e-setup-code",
+  DATABASE_URL: process.env.E2E_DATABASE_URL ?? "",
+  POSTGRES_URL: "",
+  SUPABASE_URL: fakeSupabase ? `http://127.0.0.1:${FAKE_SUPABASE_PORT}` : "",
+  SUPABASE_SERVICE_ROLE_KEY: fakeSupabase ? "eyJfake.service.role" : "",
+};
+if (!process.env.E2E_DATABASE_URL) serverEnv.PGLITE_DIR = path.join(os.tmpdir(), `site-checkin-e2e-${Date.now()}`);
+if (proxy) serverEnv.NODE_USE_ENV_PROXY = "1";
+
 export default defineConfig({
   testDir: "tests/e2e",
   timeout: 120_000,
@@ -46,16 +58,7 @@ export default defineConfig({
       url: `http://localhost:${PORT}/login`,
       reuseExistingServer: false,
       timeout: 120_000,
-      env: {
-        SETUP_CODE: "e2e-setup-code",
-        ...(process.env.E2E_DATABASE_URL
-          ? { DATABASE_URL: process.env.E2E_DATABASE_URL }
-          : { PGLITE_DIR: path.join(os.tmpdir(), `site-checkin-e2e-${Date.now()}`) }),
-        ...(fakeSupabase
-          ? { SUPABASE_URL: `http://127.0.0.1:${FAKE_SUPABASE_PORT}`, SUPABASE_SERVICE_ROLE_KEY: "eyJfake.service.role" }
-          : {}),
-        ...(proxy ? { NODE_USE_ENV_PROXY: "1" } : {}),
-      },
+      env: serverEnv,
     },
   ],
 });

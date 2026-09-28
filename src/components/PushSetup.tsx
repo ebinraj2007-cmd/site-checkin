@@ -57,6 +57,14 @@ async function saveSubscription(sub: PushSubscription) {
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Could not save.");
 }
 
+// Sends this device's subscription to the server again, if it has one (e.g. after a PIN
+// change turned alerts off on all of the person's devices).
+export async function resaveSubscription() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+  const existing = await currentSubscription();
+  if (existing) await saveSubscription(existing);
+}
+
 // "Turn on job alerts" for this phone: explains the iPhone home-screen step, asks for
 // permission, and registers the push subscription with the server.
 export function PushSetup({ compact = false }: { compact?: boolean }) {

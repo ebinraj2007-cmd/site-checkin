@@ -28,6 +28,14 @@ deploy steps.
 - The check-in rule lives in one place, `checkOnSite` in `src/lib/geo.ts`. The phone uses it
   to guide the worker; the upload route re-runs it and its answer is final. Change both
   behaviours by changing that function.
+- Arrival and leaving photos only count when fresh (`photoTimeProblem` in
+  `src/lib/job-rules.ts`); the server's clock is what goes on record. Time on site is
+  arrival photo to leaving photo (`left_at`), never the Finish button.
+- A reopened job is a new visit: code that looks at a job's photos keeps the current
+  visit's with `isCurrentVisit`.
+- Request bodies are read with `readBody` (a byte limit that also holds for chunked
+  uploads), images checked with `imageInfo`, and files stored with `putFile`, which throws
+  `StorageError` (answer 507) when storage is full or refuses the file.
 - SQL goes through `src/lib/db.ts` (`query`, `queryOne`, `transaction`) with `$n` params.
   Schema changes are new entries in `src/lib/migrations.ts`; never edit a shipped migration.
 - Modules that touch the database, cookies or secrets import `server-only`. Code shared

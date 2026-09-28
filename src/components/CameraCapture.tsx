@@ -12,10 +12,13 @@ type Shot = { blob: Blob; url: string; fix: Fix | null; live: boolean; takenAt: 
 const KIND_LABEL: Record<PhotoKind, string> = { arrival: "ARRIVED", work: "WORK PHOTO", leave: "LEFT SITE" };
 const TITLE: Record<PhotoKind, string> = { arrival: "Arrival photo", work: "Work photo", leave: "Leaving photo" };
 const MAX_SIDE = 1600;
+// A GPS reading older than this doesn't count: the phone may have moved since.
+const FIX_MAX_AGE = 60_000;
 
 // Full-screen camera for proof photos. Uses the live camera (no gallery) and the
 // phone's GPS; arrival and leaving photos can only be taken inside the check-in
 // circle. The time, GPS and job are burned into the picture before upload.
+// `onDone(conflict)` gets the server's reason when the job changed in the meantime.
 export function CameraCapture({
   jobId,
   jobTitle,
@@ -35,7 +38,7 @@ export function CameraCapture({
   workerName: string;
   timezone: string;
   onClose: () => void;
-  onDone: () => void;
+  onDone: (conflict?: string) => void;
 }) {
   const requireOnSite = kind === "arrival" || kind === "leave";
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -43,6 +46,7 @@ export function CameraCapture({
   const fileRef = useRef<HTMLInputElement>(null);
   const [camera, setCamera] = useState<"starting" | "live" | "failed">("starting");
   const [fix, setFix] = useState<Fix | null>(null);
+  const [now, setNow] = useState(0); // ticks while the camera is open; 0 until the first tick
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [shot, setShot] = useState<Shot | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -100,27 +104,43 @@ export function CameraCapture({
       setGpsError("This browser can't share its location.");
       return;
     }
-    const id = navigator.geolocation.watchPosition(
-      (pos) => {
-        const next: Fix = {
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-          at: Date.now(),
-        };
-        setGpsError(null);
-        setFix((prev) => (prev && next.at - prev.at < 20_000 && prev.accuracy < next.accuracy ? prev : next));
-      },
-      (err) => {
-        setGpsError(
-          err.code === err.PERMISSION_DENIED
-            ? "Location is blocked. Allow location for this app in your phone settings, then try again."
-            : "Can't get your location yet. Make sure location (GPS) is on.",
-        );
-      },
-      { enableHighAccuracy: true, maximumAge: 0, timeout: 30_000 },
-    );
-    return () => navigator.geolocation.clearWatch(id);
+    let last = 0;
+    const accept = (pos: GeolocationPosition) => {
+      last = Date.now();
+      const next: Fix = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, at: last };
+      setGpsError(null);
+      setFix((prev) => (prev && next.at - prev.at < 20_000 && prev.accuracy < next.accuracy ? prev : next));
+    };
+    const failed = (err: GeolocationPositionError) => {
+      setGpsError(
+        err.code === err.PERMISSION_DENIED
+          ? "Location is blocked. Allow location for this app in your phone settings, then try again."
+          : "Can't get your location yet. Make sure location (GPS) is on.",
+      );
+    };
+    const options = { enableHighAccuracy: true, maximumAge: 0, timeout: 30_000 };
+    const id = navigator.geolocation.watchPosition(accept, failed, options);
+    // Some phones stop reporting while standing still; ask again so the reading stays fresh.
+    let asking = false;
+    const timer = setInterval(() => {
+      setNow(Date.now());
+      if (asking || Date.now() - last < 15_000) return;
+      asking = true;
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          asking = false;
+          accept(pos);
+        },
+        () => {
+          asking = false;
+        },
+        options,
+      );
+    }, 5000);
+    return () => {
+      navigator.geolocation.clearWatch(id);
+      clearInterval(timer);
+    };
   }, []);
 
   // Free the preview image when it's replaced or the camera closes.
@@ -130,7 +150,8 @@ export function CameraCapture({
     };
   }, [shot]);
 
-  const check = fix ? checkOnSite({ ...site, radius }, fix) : null;
+  const liveFix = fix && (now === 0 || now - fix.at < FIX_MAX_AGE) ? fix : null;
+  const check = liveFix ? checkOnSite({ ...site, radius }, liveFix) : null;
   const canShoot = !requireOnSite || (check?.ok ?? false);
 
   async function makeShot(source: CanvasImageSource, width: number, height: number, live: boolean) {
@@ -143,13 +164,13 @@ export function CameraCapture({
     canvas.height = h;
     const ctx = canvas.getContext("2d")!;
     ctx.drawImage(source, 0, 0, w, h);
-    const place = fix
-      ? `${fix.lat.toFixed(5)}, ${fix.lng.toFixed(5)} (±${Math.round(fix.accuracy)} m) · ${formatDistance(check!.distance)} from site`
+    const place = liveFix
+      ? `${liveFix.lat.toFixed(5)}, ${liveFix.lng.toFixed(5)} (±${Math.round(liveFix.accuracy)} m) · ${formatDistance(check!.distance)} from site`
       : "Location not available";
     stamp(ctx, w, h, [`${KIND_LABEL[kind]} · ${jobTitle}`, `${formatStamp(takenAt, timezone)} · ${workerName}`, place]);
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
     if (!blob) throw new Error("Couldn't save the photo.");
-    setShot({ blob, url: URL.createObjectURL(blob), fix, live, takenAt });
+    setShot({ blob, url: URL.createObjectURL(blob), fix: liveFix, live, takenAt });
   }
 
   async function shoot() {
@@ -189,6 +210,8 @@ export function CameraCapture({
     try {
       const res = await fetch(`/api/jobs/${jobId}/photo`, { method: "POST", body: form });
       const data = await res.json().catch(() => ({}));
+      // The job was cancelled, moved to someone else, or already moved on: reload it.
+      if (res.status === 409 || res.status === 404) return onDone(data.error ?? "This job changed in the meantime.");
       if (!res.ok) throw new Error(data.error ?? "Upload failed.");
       onDone();
     } catch (e) {
@@ -247,7 +270,7 @@ export function CameraCapture({
           </>
         )}
         <GpsChip
-          fix={shot ? shot.fix : fix}
+          fix={shot ? shot.fix : liveFix}
           check={shot?.fix ? checkOnSite({ ...site, radius }, shot.fix) : check}
           requireOnSite={requireOnSite}
           error={shot ? null : gpsError}

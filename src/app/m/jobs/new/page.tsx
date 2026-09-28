@@ -44,7 +44,7 @@ export default async function NewJobPage() {
           customerName: "",
           customerPhone: "",
           instructions: "",
-          requireLeavePhoto: false,
+          requireLeavePhoto: true, // gives the job a verified time on site
           requireWorkPhotos: false,
           requireNotes: false,
           requireSignature: false,

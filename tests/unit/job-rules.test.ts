@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isLate, missingSteps } from "@/lib/job-rules";
+import { isCurrentVisit, isLate, missingSteps, photoTimeProblem } from "@/lib/job-rules";
 import { jobMessage } from "@/lib/messages";
 
 const base = {
@@ -21,6 +21,36 @@ describe("missingSteps", () => {
   });
   it("treats whitespace notes as missing", () => {
     expect(missingSteps({ ...base, require_notes: true, notes: "  \n" }, [])).toEqual(["notes"]);
+  });
+});
+
+describe("photoTimeProblem", () => {
+  const now = new Date("2026-09-27T10:00:00Z");
+  const minutes = (m: number) => new Date(now.getTime() + m * 60_000);
+  it("accepts a photo sent within 15 minutes, allowing for a slightly fast phone clock", () => {
+    expect(photoTimeProblem(minutes(0), now)).toBeNull();
+    expect(photoTimeProblem(minutes(-14), now)).toBeNull();
+    expect(photoTimeProblem(minutes(5), now)).toBeNull();
+  });
+  it("refuses a photo taken long before it was sent", () => {
+    expect(photoTimeProblem(minutes(-16), now)).toContain("more than 15 minutes ago");
+    expect(photoTimeProblem(minutes(-300), now)).toContain("Take a new photo at the site");
+  });
+  it("refuses a missing time, and a clock set ahead to make an old photo look new", () => {
+    expect(photoTimeProblem(null, now)).toContain("time is missing");
+    expect(photoTimeProblem(minutes(11), now)).toContain("clock is ahead");
+  });
+});
+
+describe("isCurrentVisit", () => {
+  const arrived_at = new Date("2026-09-27T09:00:00Z");
+  it("counts photos from the arrival photo on", () => {
+    expect(isCurrentVisit({ arrived_at }, { created_at: arrived_at })).toBe(true);
+    expect(isCurrentVisit({ arrived_at }, { created_at: new Date("2026-09-27T09:30:00Z") })).toBe(true);
+  });
+  it("leaves out photos from before a reopen, and everything before the new arrival", () => {
+    expect(isCurrentVisit({ arrived_at }, { created_at: new Date("2026-09-26T15:00:00Z") })).toBe(false);
+    expect(isCurrentVisit({ arrived_at: null }, { created_at: arrived_at })).toBe(false);
   });
 });
 

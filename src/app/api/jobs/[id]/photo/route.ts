@@ -1,33 +1,36 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse, after } from "next/server";
-import { apiUser, fail, numberField, tooLarge } from "@/lib/api";
+import { apiUser, fail, numberField, readBody } from "@/lib/api";
 import { notifyArrival, notifyFinished } from "@/lib/checkin-notify";
 import { transaction } from "@/lib/db";
 import { checkOnSite, isValidLatLng } from "@/lib/geo";
-import { getJob, getJobPhotos, missingSteps, type PhotoKind } from "@/lib/jobs";
-import { putFile, sniffImage } from "@/lib/storage";
+import { imageInfo } from "@/lib/image-check";
+import { getJob, getJobPhotos, isCurrentVisit, MAX_WORK_PHOTOS, missingSteps, photoTimeProblem } from "@/lib/jobs";
+import { putFile, StorageError } from "@/lib/storage";
 
-const MAX_BYTES = 8 * 1024 * 1024;
+// The app sends JPEGs of at most 1600 px, a few hundred KB each.
+const MAX_BYTES = 2 * 1024 * 1024;
 
 // Arrival, work and leaving photos. The server re-checks the GPS reading against the
-// job site; only arrival and leaving photos must be inside the check-in circle.
+// job site; only arrival and leaving photos must be inside the check-in circle, and
+// only fresh ones count (the server's clock is what goes on record).
 export async function POST(req: Request, ctx: RouteContext<"/api/jobs/[id]/photo">) {
   const user = await apiUser(req);
   if (user instanceof Response) return user;
-  if (tooLarge(req, MAX_BYTES + 64 * 1024)) return fail(413, "The photo is too large.");
   const job = await getJob((await ctx.params).id);
   if (!job || job.assigned_to !== user.id) return fail(404, "This job isn't assigned to you.");
 
-  const form = await req.formData().catch(() => null);
+  const body = await readBody(req, MAX_BYTES + 64 * 1024);
+  if (!body) return fail(413, "The photo is too large.");
+  const form = await body.formData().catch(() => null);
   if (!form) return fail(400, "The upload didn't arrive. Try again.");
-  const kind = form.get("kind") as PhotoKind;
-  if (!["arrival", "work", "leave"].includes(kind)) return fail(400, "Unknown photo type.");
+  const kind = form.get("kind");
+  if (kind !== "arrival" && kind !== "work" && kind !== "leave") return fail(400, "Unknown photo type.");
   const photo = form.get("photo");
   if (!(photo instanceof File) || photo.size === 0) return fail(400, "No photo was attached.");
   if (photo.size > MAX_BYTES) return fail(413, "The photo is too large.");
   const bytes = new Uint8Array(await photo.arrayBuffer());
-  const type = sniffImage(bytes);
-  if (!type) return fail(400, "That file isn't a photo.");
+  if (imageInfo(bytes)?.type !== "image/jpeg") return fail(400, "That file isn't a photo.");
 
   if (job.status === "cancelled") return fail(409, "This job was cancelled.");
   if (job.status === "completed") return fail(409, "This job is already finished.");
@@ -50,36 +53,63 @@ export async function POST(req: Request, ctx: RouteContext<"/api/jobs/[id]/photo
     return fail(422, "Your location is needed. Allow location for this app and try again.");
   }
 
-  if (kind === "leave") {
-    const missing = missingSteps(job, await getJobPhotos(job.id));
-    if (missing.length) return fail(409, `Before leaving, add: ${missing.join(", ")}.`);
+  // When the shutter was pressed, by the phone's clock.
+  const takenAt = dateField(form.get("deviceTime"));
+  if (mustBeOnSite) {
+    const problem = photoTimeProblem(takenAt, new Date());
+    if (problem) return fail(422, problem);
   }
 
-  const deviceTime = parseDeviceTime(form.get("deviceTime"));
-  const photoId = randomUUID();
-  const key = `photos/${job.id}/${photoId}.${type === "image/png" ? "png" : type === "image/webp" ? "webp" : "jpg"}`;
-  await putFile(key, bytes, type);
+  if (kind !== "arrival") {
+    const visit = (await getJobPhotos(job.id)).filter((p) => isCurrentVisit(job, p));
+    if (kind === "work" && visit.filter((p) => p.kind === "work").length >= MAX_WORK_PHOTOS) {
+      return fail(409, `This visit already has ${MAX_WORK_PHOTOS} work photos, the most it can have.`);
+    }
+    if (kind === "leave") {
+      const missing = missingSteps(job, visit);
+      if (missing.length) return fail(409, `Before leaving, add: ${missing.join(", ")}.`);
+    }
+  }
 
-  // The conditional UPDATE makes double taps and two phones harmless.
+  const photoId = randomUUID();
+  const key = `photos/${job.id}/${photoId}.jpg`;
+  try {
+    await putFile(key, bytes, "image/jpeg");
+  } catch (err) {
+    if (err instanceof StorageError) return fail(507, err.message);
+    throw err;
+  }
+
+  // The conditional statements make double taps and two phones harmless.
   const saved = await transaction(async (q) => {
-    const moved =
-      kind === "arrival"
-        ? await q.query(
-            `UPDATE jobs SET status = 'arrived', arrived_at = now(), updated_at = now()
-              WHERE id = $1 AND status = 'assigned' AND assigned_to = $2 RETURNING id`,
-            [job.id, user.id],
-          )
-        : kind === "leave"
-          ? await q.query(
-              `UPDATE jobs SET status = 'completed', left_at = now(), completed_at = now(), updated_at = now()
-                WHERE id = $1 AND status = 'arrived' AND assigned_to = $2 RETURNING id`,
-              [job.id, user.id],
-            )
-          : await q.query("SELECT id FROM jobs WHERE id = $1 AND status = 'arrived' AND assigned_to = $2", [
-              job.id,
-              user.id,
-            ]);
-    if (!moved.length) return false;
+    if (kind === "arrival") {
+      const moved = await q.query(
+        `UPDATE jobs SET status = 'arrived', arrived_at = now(), updated_at = now()
+          WHERE id = $1 AND status = 'assigned' AND assigned_to = $2 RETURNING id`,
+        [job.id, user.id],
+      );
+      if (!moved.length) return false;
+    } else if (kind === "leave") {
+      const moved = await q.query(
+        `UPDATE jobs SET status = 'completed', left_at = now(), completed_at = now(), updated_at = now()
+          WHERE id = $1 AND status = 'arrived' AND assigned_to = $2 RETURNING id`,
+        [job.id, user.id],
+      );
+      if (!moved.length) return false;
+    } else {
+      // Lock the job, then count, so parallel uploads can't pass the limit together.
+      const open = await q.query(
+        "SELECT id FROM jobs WHERE id = $1 AND status = 'arrived' AND assigned_to = $2 FOR UPDATE",
+        [job.id, user.id],
+      );
+      if (!open.length) return false;
+      const [{ n }] = await q.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM job_photos p JOIN jobs j ON j.id = p.job_id
+          WHERE p.job_id = $1 AND p.kind = 'work' AND p.created_at >= j.arrived_at`,
+        [job.id],
+      );
+      if (n >= MAX_WORK_PHOTOS) return false;
+    }
     await q.query(
       `INSERT INTO job_photos (id, job_id, user_id, kind, file_key, lat, lng, accuracy_m, distance_m,
                                on_site, live_camera, device_time)
@@ -96,21 +126,21 @@ export async function POST(req: Request, ctx: RouteContext<"/api/jobs/[id]/photo
         distance,
         onSite,
         form.get("live") === "1",
-        deviceTime?.toISOString() ?? null,
+        // Kept so the manager can see photos sent long after they were taken.
+        takenAt && Math.abs(takenAt.getTime() - Date.now()) < 86_400_000 ? takenAt.toISOString() : null,
       ],
     );
     return true;
   });
-  if (!saved) return fail(409, "This job changed in the meantime. Reload the page.");
+  if (!saved) return fail(409, "This job changed in the meantime.");
 
   if (kind === "arrival") after(() => notifyArrival(job, user.name, distance, user.id));
-  if (kind === "leave") after(() => notifyFinished(job, user.name, new Date(), user.id));
+  if (kind === "leave") after(() => notifyFinished(job, user.name, user.id, new Date()));
   return NextResponse.json({ ok: true, id: photoId, distance, onSite });
 }
 
-// The phone's clock, kept for the record. Ignored if it is more than a day off.
-function parseDeviceTime(value: FormDataEntryValue | null): Date | null {
+function dateField(value: FormDataEntryValue | null): Date | null {
   if (typeof value !== "string") return null;
   const d = new Date(value);
-  return Number.isFinite(d.getTime()) && Math.abs(d.getTime() - Date.now()) < 86_400_000 ? d : null;
+  return Number.isFinite(d.getTime()) ? d : null;
 }

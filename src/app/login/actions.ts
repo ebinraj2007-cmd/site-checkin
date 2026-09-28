@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { checkLogin, startSession } from "@/lib/auth";
+import { checkLogin, deviceToken, startSession, trustDevice } from "@/lib/auth";
 import { normalizePhone } from "@/lib/phone";
 import { getSettings } from "@/lib/settings";
 
@@ -12,8 +12,9 @@ export async function loginAction(_prev: LoginState, form: FormData): Promise<Lo
   const phone = normalizePhone(String(form.get("phone") ?? ""), countryCode);
   const pin = String(form.get("pin") ?? "");
   if (!phone || !pin) return { error: "Enter your phone number and PIN." };
-  const result = await checkLogin(phone, pin);
+  const result = await checkLogin(phone, pin, await deviceToken());
   if (!result.ok) return { error: result.error };
   await startSession(result.user.id);
+  await trustDevice(result.user.id);
   redirect(result.user.role === "manager" ? "/m" : "/w");
 }

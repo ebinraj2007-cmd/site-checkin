@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { hasAnyUser } from "@/lib/auth";
+import { setupCode } from "@/lib/setup-code";
 import { SetupForm } from "./SetupForm";
 
 export const metadata: Metadata = { title: "Set up" };
@@ -18,7 +19,7 @@ export default async function SetupPage() {
           You&apos;ll be the manager. After this you can add your workers and send them jobs.
         </p>
       </div>
-      <SetupForm needsCode={!!process.env.SETUP_CODE} />
+      <SetupForm needsCode={!!setupCode()} />
     </main>
   );
 }

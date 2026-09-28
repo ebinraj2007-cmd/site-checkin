@@ -6,8 +6,16 @@ import { env } from "./env";
 //  - Supabase Storage (private bucket) when SUPABASE_URL + a service key are set.
 //  - The `files` table in the app's own database: nothing else to set up, fine for a
 //    small team, but it grows the database (~0.3 MB per photo).
-// If a Supabase upload fails, the file goes to the database instead, so a storage
-// hiccup never loses a check-in. Reads look in the database first, then Supabase.
+// If Supabase can't be reached, the file goes to the database instead, so a storage
+// hiccup never loses a check-in. If Supabase refuses the file (full, too large), it is
+// refused, not moved: files may only ever fill DB_FILES_LIMIT_MB of the database, so they
+// can't push it over its plan's size, which would make the whole app read-only.
+// Reads look in the database first, then Supabase.
+
+// A file that couldn't be stored; the message is for the person uploading it.
+export class StorageError extends Error {}
+
+const DB_FILES_LIMIT_MB = Number(process.env.DB_FILES_LIMIT_MB) || 300;
 
 type SupabaseEnv = { url: string; key: string; bucket: string };
 
@@ -52,6 +60,8 @@ function ensureBucket(env: SupabaseEnv): Promise<void> {
   return bucketReady;
 }
 
+// Throws StorageError when Supabase answered and refused the file; any other error means
+// it couldn't be reached (or is failing, or its key is wrong) and the database may step in.
 async function supabasePut(env: SupabaseEnv, key: string, data: Uint8Array, contentType: string) {
   await ensureBucket(env);
   const res = await fetch(`${env.url}/storage/v1/object/${env.bucket}/${key}`, {
@@ -60,7 +70,11 @@ async function supabasePut(env: SupabaseEnv, key: string, data: Uint8Array, cont
     body: Buffer.from(data),
     signal: AbortSignal.timeout(20_000),
   });
-  if (!res.ok) throw new Error(`Supabase upload failed (${res.status}): ${await res.text()}`);
+  if (res.ok) return;
+  const detail = `Supabase upload failed (${res.status}): ${await res.text()}`;
+  if (res.status >= 500 || res.status === 401 || res.status === 403) throw new Error(detail);
+  console.error(detail);
+  throw new StorageError("The photo store refused this file. It may be full: tell your manager.");
 }
 
 async function supabaseSignedUrl(env: SupabaseEnv, key: string): Promise<string | null> {
@@ -75,14 +89,21 @@ async function supabaseSignedUrl(env: SupabaseEnv, key: string): Promise<string 
   return `${env.url}/storage/v1${signedURL}`;
 }
 
+// Stores a file or throws StorageError.
 export async function putFile(key: string, data: Uint8Array, contentType: string): Promise<void> {
   const env = supabaseEnv();
   if (env) {
     try {
       return await supabasePut(env, key, data, contentType);
     } catch (err) {
+      if (err instanceof StorageError) throw err;
       console.error(`Supabase Storage unavailable, keeping ${key} in the database:`, (err as Error).message);
     }
+  }
+  const used = await queryOne<{ bytes: number }>("SELECT pg_total_relation_size('files')::float8 AS bytes");
+  if ((used?.bytes ?? 0) + data.byteLength > DB_FILES_LIMIT_MB * 1024 * 1024) {
+    console.error(`Files in the database reached DB_FILES_LIMIT_MB (${DB_FILES_LIMIT_MB} MB); refusing ${key}.`);
+    throw new StorageError("Photo storage is full. Tell your manager.");
   }
   await query("INSERT INTO files (key, content_type, data) VALUES ($1, $2, $3)", [
     key,
@@ -105,17 +126,4 @@ export async function fileResponse(key: string): Promise<Response> {
   const signed = env ? await supabaseSignedUrl(env, key) : null;
   if (!signed) return new Response("Not found", { status: 404 });
   return new Response(null, { status: 302, headers: { Location: signed, "Cache-Control": "private, max-age=300" } });
-}
-
-// Checks the first bytes so an upload labelled image/jpeg really is one.
-export function sniffImage(data: Uint8Array): "image/jpeg" | "image/png" | "image/webp" | null {
-  if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg";
-  if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return "image/png";
-  if (
-    data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46 &&
-    data[8] === 0x57 && data[9] === 0x45 && data[10] === 0x42 && data[11] === 0x50
-  ) {
-    return "image/webp";
-  }
-  return null;
 }

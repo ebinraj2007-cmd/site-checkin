@@ -1,7 +1,8 @@
 import { apiUser } from "@/lib/api";
 import { appUrl } from "@/lib/app-url";
 import { query } from "@/lib/db";
-import { listJobs, statusLabel } from "@/lib/jobs";
+import { listJobs, overlappingVisits, statusLabel } from "@/lib/jobs";
+import { displayPhone } from "@/lib/phone";
 import { getSettings } from "@/lib/settings";
 import { dayKey, formatStamp } from "@/lib/time";
 
@@ -14,41 +15,48 @@ export async function GET(req: Request) {
   const params = new URL(req.url).searchParams;
   const view = VIEWS.find((v) => v === params.get("view")) ?? "all";
   const worker = params.get("worker") ?? undefined;
-  const [{ timezone: tz }, jobs, baseUrl] = await Promise.all([
+  const [{ timezone: tz }, jobs, baseUrl, overlaps] = await Promise.all([
     getSettings(),
     listJobs({ view, workerId: worker, limit: 10_000 }),
     appUrl(),
+    overlappingVisits(),
   ]);
+  // The current visit's photos (a reopened job starts a new visit).
   const stats = await query<{ job_id: string; work_photos: number; arrival_distance: number | null }>(
-    `SELECT job_id,
-            count(*) FILTER (WHERE kind = 'work')::int AS work_photos,
-            max(distance_m) FILTER (WHERE kind = 'arrival') AS arrival_distance
-       FROM job_photos GROUP BY job_id`,
+    `SELECT p.job_id,
+            count(*) FILTER (WHERE p.kind = 'work')::int AS work_photos,
+            max(p.distance_m) FILTER (WHERE p.kind = 'arrival') AS arrival_distance
+       FROM job_photos p JOIN jobs j ON j.id = p.job_id
+      WHERE p.created_at >= j.arrived_at
+      GROUP BY p.job_id`,
   );
   const byJob = new Map(stats.map((s) => [s.job_id, s]));
+  const overlapping = new Set(overlaps.map((o) => o.job_id));
   const when = (d: Date | null) => (d ? formatStamp(d, tz) : "");
 
   const header = [
     "Job", "Status", "Worker", "Customer", "Customer phone", "Address", "Scheduled", "Arrived",
-    "Arrival distance (m)", "Left site", "Finished", "Minutes on site", "Work photos", "Notes",
-    "Signed by", "Link",
+    "Arrival distance (m)", "Left site", "Finished", "Minutes on site", "Overlaps another job",
+    "Work photos", "Notes", "Signed by", "Link",
   ];
   const rows = jobs.map((j) => {
     const s = byJob.get(j.id);
-    const end = j.left_at ?? j.completed_at;
     return [
       j.title,
       statusLabel(j.status),
       j.worker_name ?? "",
       j.customer_name,
-      j.customer_phone ? `+${j.customer_phone}` : "",
+      // No leading "+": spreadsheets would read it as a formula.
+      j.customer_phone ? displayPhone(j.customer_phone).replace(/^\+/, "") : "",
       j.address,
       when(j.scheduled_at),
       when(j.arrived_at),
       s?.arrival_distance != null ? Math.round(s.arrival_distance) : "",
       when(j.left_at),
       when(j.completed_at),
-      j.arrived_at && end ? Math.round((end.getTime() - j.arrived_at.getTime()) / 60_000) : "",
+      // Only arrival photo to leaving photo counts; Finish can be tapped from anywhere.
+      j.arrived_at && j.left_at ? Math.round((j.left_at.getTime() - j.arrived_at.getTime()) / 60_000) : "",
+      overlapping.has(j.id) ? "yes" : "",
       s?.work_photos ?? 0,
       j.notes,
       j.signature_name,

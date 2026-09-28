@@ -5,7 +5,7 @@ import { JobSteps } from "@/components/JobSteps";
 import { Card, LinkButton, StatusBadge } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { directionsLink } from "@/lib/geo";
-import { getJob, getJobPhotos, isLate } from "@/lib/jobs";
+import { getJob, getJobPhotos, isCurrentVisit, isLate } from "@/lib/jobs";
 import { displayPhone, telLink } from "@/lib/phone";
 import { getSettings } from "@/lib/settings";
 import { formatDateTime } from "@/lib/time";
@@ -84,14 +84,16 @@ export default async function WorkerJobPage(props: PageProps<"/w/jobs/[id]">) {
           arrivedAtText: job.arrived_at ? formatDateTime(job.arrived_at, tz, now) : null,
           completedAtText: job.completed_at ? formatDateTime(job.completed_at, tz, now) : null,
         }}
-        photos={photos.map((p) => ({
-          id: p.id,
-          kind: p.kind,
-          url: `/api/files/${p.file_key}`,
-          timeText: formatDateTime(p.created_at, tz, now),
-          distance: p.distance_m,
-          onSite: p.on_site,
-        }))}
+        photos={photos
+          .filter((p) => isCurrentVisit(job, p))
+          .map((p) => ({
+            id: p.id,
+            kind: p.kind,
+            url: `/api/files/${p.file_key}`,
+            timeText: formatDateTime(p.created_at, tz, now),
+            distance: p.distance_m,
+            onSite: p.on_site,
+          }))}
       />
     </div>
   );

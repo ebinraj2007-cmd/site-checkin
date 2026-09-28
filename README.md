@@ -14,13 +14,16 @@ No app store: workers open a link and add it to their home screen.
 - Create a job: title, worker, time, address with a map pin, and the check-in distance
   (for example "within 150 m").
 - Choose what the worker must send for each job. The arrival photo is always required;
-  work photos, notes, a customer signature and a leaving photo are optional per job.
+  work photos, notes, a customer signature and a leaving photo are optional per job (the
+  leaving photo is on by default: without it a job has no time on site).
 - The worker gets a phone notification. Workers who haven't turned notifications on get a
   **Send job on WhatsApp** button with the job, directions and link filled in.
 - **Today** shows late jobs (not checked in 15 minutes after the start time), who is on site
   and the latest check-ins. Managers get a notification when someone arrives or finishes.
 - Each job shows the proof: photos with time, distance from the site, GPS accuracy, a map of
-  where each photo was taken, notes, the signature and time on site.
+  where each photo was taken, notes, the signature and time on site (arrival photo to
+  leaving photo). A job is flagged if the same worker was checked in at another site more
+  than 500 m away during the visit.
 - **Export CSV** of jobs and check-in times (payroll, customer records).
 
 **Worker**
@@ -39,13 +42,27 @@ No app store: workers open a link and add it to their home screen.
   could still upload any picture; the location check applies to it all the same.)
 - **GPS checked twice.** The phone checks the distance to guide the worker; the server checks
   it again on upload and its answer counts. Readings less accurate than ±200 m are refused.
+- **Sent from the site, not later.** The GPS reading must be less than a minute old when the
+  shutter is pressed, and arrival and leaving photos must reach the server within 15 minutes
+  of being taken (a phone clock set ahead doesn't help). The server's own time is what's
+  recorded, and the manager sees any photo that was sent late.
 - **Stamped.** The job, time, worker, coordinates and distance are burned into the photo. The
   server also records its own time, the coordinates, the accuracy and the distance.
+- **Time on site** runs from the arrival photo to the leaving photo, both taken inside the
+  circle. A job finished with the Finish button (no leaving photo) has no time on site, since
+  Finish can be tapped anywhere. Check-ins that overlap at sites far apart are flagged on the
+  job and in the CSV. Reopening a job starts a new visit with a new arrival photo.
 - **Limit:** the location comes from the phone, and no web app can detect a fake-GPS app on a
   phone set up to spoof its location. The photo itself (what's in it, and where the map dot
   is) is the evidence to look at.
 - **Logins:** 6–8 digit PINs; after 5 wrong PINs the number is locked for 15 minutes, even
-  when guesses are sent all at once.
+  when guesses are sent all at once. A phone that has logged in before keeps its own count,
+  so someone guessing elsewhere can't lock a person out of their own phone. Resetting a
+  worker's PIN, or changing your own, logs out every other device and stops its alerts.
+- **Storage:** only real JPEG photos from the app (up to 2 MB) and PNG signatures are
+  accepted, with up to 20 work photos per visit. Photos kept in the database stop at
+  `DB_FILES_LIMIT_MB`, so they can't fill a free Supabase database (which would turn the
+  whole app read-only).
 
 ## Put it online (about 15 minutes)
 
@@ -59,8 +76,10 @@ You need a free [Vercel](https://vercel.com) account and a free
    `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
 3. **Deployments → ⋯ → Redeploy.**
 4. Open the site and create your manager account. Set a `SETUP_CODE` environment variable
-   first (any random text) and enter it on the setup page; without one, the first person to
-   open a new deployment becomes its manager.
+   first (at least 12 random characters) and enter it on the setup page; without one, the
+   first person to open a new deployment becomes its manager. Keep the code: a manager who
+   forgets their PIN or loses their phone uses it at **Log in → Use the setup code** to set
+   a new PIN.
 5. **Workers →** add each worker → **Send login on WhatsApp**. They open the link, log in,
    add it to their home screen and tap **Turn on job alerts**.
 
@@ -81,7 +100,8 @@ OpenStreetMap's free services, which are meant for light use.
 | `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` | optional | Keep photos in a private Supabase Storage bucket. Without them, photos are stored in the database. If an upload to Supabase fails, the photo goes to the database instead. |
 | `SUPABASE_BUCKET` | optional | Bucket name, default `site-checkin`. |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | optional | Push notification keys. Generated and stored in the database if not set. |
-| `SETUP_CODE` | recommended | A secret the first-time setup page asks for, so nobody else can claim a fresh deployment. Only used until the first manager exists. |
+| `SETUP_CODE` | recommended | A secret the first-time setup page asks for, so nobody else can claim a fresh deployment. With 12 or more characters it also unlocks manager recovery (`/recover`). |
+| `DB_FILES_LIMIT_MB` | optional | Most space photos may take in the database, default 300. Supabase's free database is 500 MB. |
 | `APP_URL` | optional | Base URL used in WhatsApp messages. Defaults to the Vercel production domain. |
 
 ## On the phones
@@ -99,7 +119,7 @@ OpenStreetMap's free services, which are meant for light use.
 ```bash
 npm install
 npm run dev          # http://localhost:3000, with an embedded Postgres in .data/pglite
-npm test             # unit tests (GPS rules, phone numbers, timezones, push)
+npm test             # unit tests (GPS and photo rules, logins, storage, push, phone numbers)
 npm run test:e2e     # build + browser tests: fake camera and GPS, full manager/worker flow
 npm run lint
 npm run typecheck

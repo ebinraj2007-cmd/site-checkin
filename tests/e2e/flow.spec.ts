@@ -21,6 +21,43 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(shotsDir, `${name}.png`), fullPage: true });
 }
 
+// A real JPEG, drawn and encoded by the browser like the app's camera does.
+async function jpeg(page: Page): Promise<Buffer> {
+  const b64 = await page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 320;
+    canvas.height = 240;
+    const ctx = canvas.getContext("2d")!;
+    for (let i = 0; i < 60; i++) {
+      ctx.fillStyle = `hsl(${(i * 47) % 360} 70% 50%)`;
+      ctx.fillRect((i * 53) % 320, (i * 29) % 240, 40, 30);
+    }
+    return canvas.toDataURL("image/jpeg", 0.85).split(",")[1];
+  });
+  return Buffer.from(b64, "base64");
+}
+
+// A 1×1 PNG, as a canvas makes them.
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+// A photo upload the way the app sends it, for checks the camera screen can't reach.
+async function upload(page: Page, jobId: string, kind: string, where: { latitude: number; longitude: number; accuracy: number }, takenAt = new Date()) {
+  return page.request.post(`/api/jobs/${jobId}/photo`, {
+    multipart: {
+      kind,
+      lat: String(where.latitude),
+      lng: String(where.longitude),
+      accuracy: String(where.accuracy),
+      live: "1",
+      deviceTime: takenAt.toISOString(),
+      photo: { name: "photo.jpg", mimeType: "image/jpeg", buffer: await jpeg(page) },
+    },
+  });
+}
+
 let manager: Page;
 let managerCtx: BrowserContext;
 let worker: Page;
@@ -150,30 +187,29 @@ test("check-in is refused away from the site, on the phone and on the server", a
   await worker.getByRole("button", { name: "Cancel" }).click();
 
   // A doctored upload is checked again by the server.
-  const res = await worker.request.post(`/api/jobs/${jobId}/photo`, {
-    multipart: {
-      kind: "arrival",
-      lat: String(FAR.latitude),
-      lng: String(FAR.longitude),
-      accuracy: "10",
-      live: "1",
-      photo: { name: "photo.jpg", mimeType: "image/jpeg", buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]) },
-    },
-  });
+  const res = await upload(worker, jobId, "arrival", FAR);
   expect(res.status()).toBe(422);
   expect((await res.json()).error).toContain("from the job site");
 
-  // Not-a-photo is refused too.
-  const junk = await worker.request.post(`/api/jobs/${jobId}/photo`, {
-    multipart: {
-      kind: "arrival",
-      lat: String(NEAR.latitude),
-      lng: String(NEAR.longitude),
-      accuracy: "10",
-      photo: { name: "photo.jpg", mimeType: "image/jpeg", buffer: Buffer.from("<html>not an image</html>") },
-    },
-  });
-  expect(junk.status()).toBe(400);
+  // A photo taken on site earlier and sent later doesn't count as arriving now.
+  const stale = await upload(worker, jobId, "arrival", NEAR, new Date(Date.now() - 20 * 60_000));
+  expect(stale.status()).toBe(422);
+  expect((await stale.json()).error).toContain("more than 15 minutes ago");
+
+  // Not-a-photo is refused too, even when it starts like a JPEG.
+  for (const buffer of [Buffer.from("<html>not an image</html>"), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4])]) {
+    const junk = await worker.request.post(`/api/jobs/${jobId}/photo`, {
+      multipart: {
+        kind: "arrival",
+        lat: String(NEAR.latitude),
+        lng: String(NEAR.longitude),
+        accuracy: "10",
+        deviceTime: new Date().toISOString(),
+        photo: { name: "photo.jpg", mimeType: "image/jpeg", buffer },
+      },
+    });
+    expect(junk.status()).toBe(400);
+  }
 });
 
 async function takePhoto(page: Page, button: RegExp, expectMessage: string) {
@@ -221,6 +257,13 @@ test("worker checks in on site and completes every step", async () => {
   await expect(worker.getByText("Signature saved.")).toBeVisible();
   await shot(worker, "08-worker-steps");
 
+  // One signature per job: it can't be swapped afterwards.
+  const again = await worker.request.post(`/api/jobs/${jobId}/signature`, {
+    multipart: { name: "Someone Else", signature: { name: "signature.png", mimeType: "image/png", buffer: PNG } },
+  });
+  expect(again.status()).toBe(409);
+  expect((await again.json()).error).toContain("already signed");
+
   await takePhoto(worker, /Take leaving photo/, "Job finished. Good work!");
   await expect(worker.getByText(/^Finished /)).toBeVisible();
   await shot(worker, "09-worker-done");
@@ -259,43 +302,57 @@ test("manager sees the proof and exports it", async () => {
   expect(csv).toContain("Ravi Kumar");
   expect(csv).toContain("Replaced the filter and cleaned the coils.");
   expect(csv.split("\r\n")[1]).toContain(",Done,");
+  expect(csv).toContain(",971 55 333 4444,"); // no "+" for spreadsheets to trip on
 });
 
-test("an on-site job stays with its worker, and reopening keeps the check-in", async () => {
+test("an on-site job stays with its worker, and reopening starts a new visit", async () => {
   await manager.goto("/m/jobs/new");
   await manager.getByLabel("Job title").fill("Pump repair");
   await manager.getByLabel("Worker", { exact: true }).selectOption({ label: "Ravi Kumar" });
   await manager.getByLabel("Paste a Google Maps link or coordinates").fill(`${SITE.latitude}, ${SITE.longitude}`);
+  // New jobs ask for a leaving photo, so they get a real time on site.
+  await expect(manager.getByRole("checkbox", { name: /^Leaving photo/ })).toBeChecked();
   await manager.getByRole("button", { name: "Create job & notify worker" }).click();
   await expect(manager).toHaveURL(/created=1/);
   const id = manager.url().match(/jobs\/([0-9a-f-]{36})/)![1];
 
-  const arrived = await worker.request.post(`/api/jobs/${id}/photo`, {
-    multipart: {
-      kind: "arrival",
-      lat: String(NEAR.latitude),
-      lng: String(NEAR.longitude),
-      accuracy: "12",
-      live: "1",
-      photo: { name: "photo.jpg", mimeType: "image/jpeg", buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]) },
-    },
-  });
-  expect(arrived.status()).toBe(200);
+  expect((await upload(worker, id, "arrival", NEAR)).status()).toBe(200);
 
   await manager.goto(`/m/jobs/${id}/edit`);
   await expect(manager.getByText("Ravi Kumar is on site now.")).toBeVisible();
   await expect(manager.getByLabel("Worker", { exact: true })).toBeDisabled();
+  // Everything else can still change.
+  await manager.getByLabel("Job title").fill("Pump repair (urgent)");
+  await manager.getByRole("button", { name: "Save changes" }).click();
+  await expect(manager.getByRole("heading", { name: "Pump repair (urgent)" })).toBeVisible();
 
   await manager.goto(`/m/jobs/${id}`);
+  await expect(manager.getByText(/On site for .* so far/)).toBeVisible();
   manager.once("dialog", (d) => d.accept());
   await manager.getByRole("button", { name: "Cancel job" }).click();
   await expect(manager.getByText("This job was cancelled.")).toBeVisible();
+  // A closed job can't be edited (e.g. handed to someone else) until it's reopened.
+  await manager.goto(`/m/jobs/${id}/edit`);
+  await expect(manager).toHaveURL(new RegExp(`/m/jobs/${id}$`));
+
   manager.once("dialog", (d) => d.accept());
   await manager.getByRole("button", { name: "Reopen" }).click();
-  await expect(manager.getByText("On site", { exact: true })).toBeVisible();
+  await expect(manager.getByText("Waiting for the arrival photo.")).toBeVisible();
+  await expect(manager.getByRole("heading", { name: "Earlier visits" })).toBeVisible();
+  await shot(manager, "12-reopened-job");
 
+  // The worker checks in again for the new visit.
   await worker.goto(`/w/jobs/${id}`);
-  await expect(worker.getByRole("button", { name: "✓ Finish job" })).toBeEnabled();
+  await expect(worker.getByRole("button", { name: /take arrival photo/ })).toBeVisible();
+  expect((await upload(worker, id, "arrival", NEAR)).status()).toBe(200);
+  await worker.reload();
+  await expect(worker.getByRole("button", { name: /Take leaving photo/ })).toBeEnabled();
+
+  // Work photos are capped per visit.
+  const statuses = [];
+  for (let i = 0; i < 21; i++) statuses.push((await upload(worker, id, "work", NEAR)).status());
+  expect(statuses.slice(0, 20).every((s) => s === 200)).toBe(true);
+  expect(statuses[20]).toBe(409);
 });
 
 test("access rules and push subscriptions", async ({ browser }) => {
@@ -324,6 +381,10 @@ test("access rules and push subscriptions", async ({ browser }) => {
     data: { endpoint: "https://169.254.169.254/latest", keys: { p256dh: Buffer.alloc(65).toString("base64url"), auth: Buffer.alloc(16).toString("base64url") } },
   });
   expect(evil.status()).toBe(400);
+  const notPush = await worker.request.post("/api/push/subscribe", {
+    data: { endpoint: "https://storage.googleapis.com/bucket/x", keys: { p256dh: Buffer.alloc(65, 4).toString("base64url"), auth: Buffer.alloc(16, 1).toString("base64url") } },
+  });
+  expect(notPush.status()).toBe(400);
   const keys = { p256dh: Buffer.alloc(65, 4).toString("base64url"), auth: Buffer.alloc(16, 1).toString("base64url") };
   const good = await worker.request.post("/api/push/subscribe", {
     data: { endpoint: "https://fcm.googleapis.com/fcm/send/test-token", keys },
@@ -337,19 +398,65 @@ test("access rules and push subscriptions", async ({ browser }) => {
   expect(forged.status()).toBe(403);
 });
 
-test("five wrong PINs lock the account for a while", async ({ browser }) => {
-  const ctx = await browser.newContext();
-  const page = await ctx.newPage();
-  await page.goto("/login");
-  for (let i = 0; i < 5; i++) {
-    await page.getByLabel("Phone number").fill("0502222222");
+const WRONG = "Wrong phone number or PIN. After 5 wrong tries, the number is locked for 15 minutes.";
+
+async function guessPins(page: Page, phone: string, times: number) {
+  for (let i = 0; i < times; i++) {
+    await page.getByLabel("Phone number").fill(phone);
     await page.getByLabel("PIN").fill("999999");
     await page.getByRole("button", { name: "Log in" }).click();
     await expect(page.getByRole("button", { name: "Log in" })).toBeEnabled();
   }
-  await expect(page.getByText("Too many wrong PINs")).toBeVisible();
+  await expect(page.getByText(WRONG)).toBeVisible();
+}
+
+test("five wrong PINs lock the number, but not on its owner's own phone", async ({ browser }) => {
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  await page.goto("/login");
+  await guessPins(page, "0502222222", 5);
+  // Locked: the right PIN is refused too, with the same answer.
   await page.getByLabel("PIN").fill("246810");
   await page.getByRole("button", { name: "Log in" }).click();
-  await expect(page.getByText("Too many wrong PINs")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Log in" })).toBeEnabled();
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByText(WRONG)).toBeVisible();
   await ctx.close();
+
+  // Ravi's own phone has logged in before, so the guesses above don't lock it out.
+  await workerCtx.clearCookies({ name: "sc_session" });
+  await worker.goto("/login");
+  await worker.getByLabel("Phone number").fill("0502222222");
+  await worker.getByLabel("PIN").fill("246810");
+  await worker.getByRole("button", { name: "Log in" }).click();
+  await expect(worker).toHaveURL(/\/w$/);
+});
+
+// Last: it logs the manager out everywhere.
+test("a locked-out manager gets back in with the setup code", async ({ browser }) => {
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  await page.goto("/login");
+  await guessPins(page, "0501111111", 5);
+  await page.getByRole("link", { name: "Use the setup code" }).click();
+  await expect(page).toHaveURL(/\/recover$/);
+  await page.getByLabel("Setup code").fill("not-the-code-123");
+  await page.getByLabel("Manager's mobile number").fill("050 111 1111");
+  await page.getByLabel("New PIN", { exact: true }).fill("735184");
+  await page.getByLabel("Repeat new PIN").fill("735184");
+  await page.getByRole("button", { name: "Reset PIN and log in" }).click();
+  await expect(page.getByText("That setup code is wrong.")).toBeVisible();
+  await shot(page, "13-recover");
+  await page.getByLabel("Setup code").fill(" E2E-SETUP-CODE ");
+  await page.getByRole("button", { name: "Reset PIN and log in" }).click();
+  await expect(page).toHaveURL(/\/m$/);
+  await ctx.close();
+
+  // The manager is logged out everywhere else.
+  await manager.goto("/m/jobs");
+  await expect(manager).toHaveURL(/\/login$/);
+  await manager.getByLabel("Phone number").fill("0501111111");
+  await manager.getByLabel("PIN").fill("735184");
+  await manager.getByRole("button", { name: "Log in" }).click();
+  await expect(manager).toHaveURL(/\/m$/);
 });

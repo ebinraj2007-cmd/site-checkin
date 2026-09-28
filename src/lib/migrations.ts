@@ -125,4 +125,30 @@ BEGIN
 END $$;
 `,
   },
+  {
+    id: 3,
+    // Browsers a person has logged in on. Their login attempts have their own counter, so
+    // someone guessing PINs from elsewhere can't lock the owner out of their own phone.
+    sql: `
+CREATE TABLE login_devices (
+  token_hash text PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  failed_logins integer NOT NULL DEFAULT 0,
+  locked_until timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_login_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX login_devices_user_idx ON login_devices (user_id);
+ALTER TABLE login_devices ENABLE ROW LEVEL SECURITY;
+DO $$
+DECLARE
+  r text;
+BEGIN
+  FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+    CONTINUE WHEN NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r);
+    EXECUTE format('REVOKE ALL ON TABLE public.login_devices FROM %I', r);
+  END LOOP;
+END $$;
+`,
+  },
 ];

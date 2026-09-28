@@ -17,6 +17,7 @@ describe("isPushSubscription", () => {
       "https://updates.push.services.mozilla.com/wpush/v2/abc",
       "https://web.push.apple.com/QGx",
       "https://wns2-par02p.notify.windows.com/w/?token=abc",
+      "https://android.googleapis.com/gcm/send/abc",
     ]) {
       expect(isPushSubscription({ endpoint, keys })).toBe(true);
     }
@@ -24,6 +25,10 @@ describe("isPushSubscription", () => {
   it("refuses other hosts, plain http and malformed keys", () => {
     expect(isPushSubscription({ endpoint: "https://169.254.169.254/x", keys })).toBe(false);
     expect(isPushSubscription({ endpoint: "https://googleapis.com.evil.io/x", keys })).toBe(false);
+    // Other Google hosts are not push services.
+    expect(isPushSubscription({ endpoint: "https://storage.googleapis.com/bucket/x", keys })).toBe(false);
+    expect(isPushSubscription({ endpoint: "https://fcm.googleapis.com:8443/fcm/send/abc", keys })).toBe(false);
+    expect(isPushSubscription({ endpoint: "https://notify.windows.com.evil.io/w", keys })).toBe(false);
     expect(isPushSubscription({ endpoint: "http://fcm.googleapis.com/fcm/send/abc", keys })).toBe(false);
     expect(isPushSubscription({ endpoint: "https://fcm.googleapis.com/x", keys: { ...keys, p256dh: "short" } })).toBe(false);
     expect(isPushSubscription({ endpoint: "https://fcm.googleapis.com/x", keys: { ...keys, auth: "!!" } })).toBe(false);

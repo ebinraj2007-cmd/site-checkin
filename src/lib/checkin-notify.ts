@@ -17,8 +17,15 @@ export function notifyArrival(job: Pick<Job, "id" | "title">, workerName: string
   );
 }
 
-export function notifyFinished(job: Pick<Job, "id" | "title" | "arrived_at">, workerName: string, finishedAt: Date, workerId: string) {
-  const onSite = job.arrived_at ? ` · on site ${formatDuration(finishedAt.getTime() - job.arrived_at.getTime())}` : "";
+// `leftAt` is the leaving photo's time; a job finished without one has no time on site.
+export function notifyFinished(
+  job: Pick<Job, "id" | "title" | "arrived_at">,
+  workerName: string,
+  workerId: string,
+  leftAt: Date | null,
+) {
+  const onSite =
+    job.arrived_at && leftAt ? ` · on site ${formatDuration(leftAt.getTime() - job.arrived_at.getTime())}` : "";
   return notifyManagers(
     { title: `${workerName} finished`, body: `${job.title}${onSite}`, url: `/m/jobs/${job.id}`, tag: `job-${job.id}` },
     workerId,

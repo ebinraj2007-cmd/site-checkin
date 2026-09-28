@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkOnSite, distanceMeters, formatDistance, parseLocation } from "@/lib/geo";
+import { checkOnSite, distanceMeters, formatDistance, isGoogleMapsFetchable, parseLocation } from "@/lib/geo";
 
 const site = { lat: 25.2048, lng: 55.2708, radius: 150 };
 
@@ -70,5 +70,32 @@ describe("formatDistance", () => {
     expect(formatDistance(35.4)).toBe("35 m");
     expect(formatDistance(1234)).toBe("1.2 km");
     expect(formatDistance(23_456)).toBe("23 km");
+  });
+});
+
+describe("isGoogleMapsFetchable", () => {
+  it("allows Google Maps short links and the pages they lead to", () => {
+    for (const link of [
+      "https://maps.app.goo.gl/AbCdEf123",
+      "https://goo.gl/maps/xyz",
+      "https://www.google.com/maps/place/x",
+      "https://maps.google.com/?cid=1",
+    ]) {
+      expect(isGoogleMapsFetchable(link)).toBe(true);
+    }
+  });
+  it("refuses look-alike and other hosts", () => {
+    for (const link of [
+      "https://google.biz.id/maps",
+      "https://google.me.uk/x",
+      "https://google.xyz/x",
+      "https://google.com.de/x",
+      "https://maps.app.goo.gl.evil.io/x",
+      "http://maps.app.goo.gl/x",
+      "https://www.google.com:8080/maps",
+      "not a link",
+    ]) {
+      expect(isGoogleMapsFetchable(link)).toBe(false);
+    }
   });
 });

@@ -12,6 +12,8 @@ import { listUsers } from "@/lib/users";
 
 export const metadata: Metadata = { title: "Jobs" };
 
+const PAGE = 200;
+
 const VIEWS = [
   { key: "open", label: "Open" },
   { key: "done", label: "Done" },
@@ -25,11 +27,12 @@ export default async function JobsPage(props: PageProps<"/m/jobs">) {
   const params = await props.searchParams;
   const view: View = VIEWS.some((v) => v.key === params.view) ? (params.view as View) : "open";
   const worker = typeof params.worker === "string" ? params.worker : undefined;
-  const [{ timezone }, jobs, users] = await Promise.all([
+  const [{ timezone }, found, users] = await Promise.all([
     getSettings(),
-    listJobs({ view, workerId: worker }),
+    listJobs({ view, workerId: worker, limit: PAGE + 1 }),
     listUsers(),
   ]);
+  const jobs = found.slice(0, PAGE);
   const now = new Date();
   const groups = groupByDay(jobs, view, timezone, now);
   const query = (next: Record<string, string | undefined>) => {
@@ -84,6 +87,11 @@ export default async function JobsPage(props: PageProps<"/m/jobs">) {
               ))}
             </section>
           ))}
+          {found.length > PAGE && (
+            <p className="text-sm text-slate-500">
+              Showing {PAGE} jobs. Choose a worker to narrow the list, or use Export CSV to get all of them.
+            </p>
+          )}
         </div>
       )}
     </div>

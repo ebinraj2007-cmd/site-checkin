@@ -145,7 +145,7 @@ export function JobForm({
           <Check name="require_work_photos" defaultChecked={defaults.requireWorkPhotos} label="Work photos" detail="Before/after or finished-work photos." />
           <Check name="require_notes" defaultChecked={defaults.requireNotes} label="Notes" detail="A short report of what was done." />
           <Check name="require_signature" defaultChecked={defaults.requireSignature} label="Customer signature" detail="The customer signs on the worker's screen." />
-          <Check name="require_leave_photo" defaultChecked={defaults.requireLeavePhoto} label="Leaving photo" detail="Taken at the site when leaving. Records time on site." />
+          <Check name="require_leave_photo" defaultChecked={defaults.requireLeavePhoto} label="Leaving photo" detail="Taken at the site when leaving. Without it, the job has no time on site." />
         </div>
       </Card>
 

@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
 import { formatDistance, type LatLng } from "@/lib/geo";
-import { missingSteps, type JobStatus, type PhotoKind } from "@/lib/job-rules";
+import { MAX_WORK_PHOTOS, missingSteps, type JobStatus, type PhotoKind } from "@/lib/job-rules";
 import { CameraCapture } from "./CameraCapture";
 import { SignaturePad } from "./SignaturePad";
 import { Alert, buttonClass, inputClass } from "./ui";
@@ -36,6 +36,7 @@ export type StepPhoto = {
 };
 
 // The worker's job screen: arrival photo → (work photos, notes, signature) → finish.
+// `photos` are the current visit's (a reopened job starts over with a new arrival photo).
 export function JobSteps({
   job,
   photos,
@@ -49,12 +50,12 @@ export function JobSteps({
 }) {
   const router = useRouter();
   const [camera, setCamera] = useState<PhotoKind | null>(null);
-  const [flash, setFlash] = useState<string | null>(null);
+  const [flash, setFlash] = useState<{ text: string; tone: "green" | "amber" } | null>(null);
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const arrival = photos.find((p) => p.kind === "arrival");
-  const leave = photos.find((p) => p.kind === "leave");
+  const arrival = photos.findLast((p) => p.kind === "arrival");
+  const leave = photos.findLast((p) => p.kind === "leave");
   const work = photos.filter((p) => p.kind === "work");
   const onSite = job.status === "arrived";
   const missing = missingSteps(
@@ -68,12 +69,15 @@ export function JobSteps({
     photos,
   );
 
-  function done(message: string) {
+  // After a step is saved, or when the server says the job changed in the meantime
+  // (cancelled, moved, or already done from another tap): show why and reload the job.
+  function done(message: string, tone: "green" | "amber" = "green") {
     setCamera(null);
-    setFlash(message);
+    setFlash({ text: message, tone });
     setError(null);
     router.refresh();
   }
+  const conflict = (message: string) => done(message, "amber");
 
   async function finish() {
     setFinishing(true);
@@ -81,6 +85,7 @@ export function JobSteps({
     try {
       const res = await fetch(`/api/jobs/${job.id}/finish`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 409 || res.status === 404) return conflict(data.error ?? "This job changed in the meantime.");
       if (!res.ok) throw new Error(data.error ?? "Couldn't finish the job.");
       done("Job finished. Good work!");
     } catch (e) {
@@ -92,7 +97,7 @@ export function JobSteps({
 
   return (
     <div className="space-y-3">
-      {flash && <Alert tone="green">{flash}</Alert>}
+      {flash && <Alert tone={flash.tone}>{flash.text}</Alert>}
       {job.status === "cancelled" && <Alert tone="red">This job was cancelled. You don&apos;t need to go.</Alert>}
 
       <Step
@@ -133,11 +138,14 @@ export function JobSteps({
                   ))}
                 </div>
               )}
-              {onSite && (
-                <button type="button" onClick={() => setCamera("work")} className={buttonClass("secondary", "md", "w-full")}>
-                  <CameraIcon /> Add work photo
-                </button>
-              )}
+              {onSite &&
+                (work.length < MAX_WORK_PHOTOS ? (
+                  <button type="button" onClick={() => setCamera("work")} className={buttonClass("secondary", "md", "w-full")}>
+                    <CameraIcon /> Add work photo
+                  </button>
+                ) : (
+                  <p className="text-sm text-slate-500">{MAX_WORK_PHOTOS} photos is the most a visit can have.</p>
+                ))}
             </Step>
           )}
 
@@ -150,7 +158,7 @@ export function JobSteps({
               detail={onSite ? "What was done, parts used, anything the office should know." : undefined}
             >
               {onSite ? (
-                <NotesBox jobId={job.id} initial={job.notes} onSaved={() => done("Notes saved.")} />
+                <NotesBox jobId={job.id} initial={job.notes} onSaved={() => done("Notes saved.")} onConflict={conflict} />
               ) : (
                 <p className="whitespace-pre-wrap rounded-xl bg-slate-50 p-3 text-sm">{job.notes}</p>
               )}
@@ -169,7 +177,7 @@ export function JobSteps({
                 // eslint-disable-next-line @next/next/no-img-element -- private, auth-checked image
                 <img src={job.signatureUrl} alt="Customer signature" className="h-24 w-full rounded-xl border border-slate-200 bg-white object-contain" />
               ) : (
-                onSite && <SignaturePad jobId={job.id} onSaved={() => done("Signature saved.")} />
+                onSite && <SignaturePad jobId={job.id} onSaved={() => done("Signature saved.")} onConflict={conflict} />
               )}
             </Step>
           )}
@@ -219,14 +227,16 @@ export function JobSteps({
           workerName={workerName}
           timezone={timezone}
           onClose={() => setCamera(null)}
-          onDone={() =>
-            done(
-              camera === "arrival"
-                ? "Arrival recorded. Your manager can see it."
-                : camera === "leave"
-                  ? "Job finished. Good work!"
-                  : "Photo added.",
-            )
+          onDone={(changed) =>
+            changed
+              ? conflict(changed)
+              : done(
+                  camera === "arrival"
+                    ? "Arrival recorded. Your manager can see it."
+                    : camera === "leave"
+                      ? "Job finished. Good work!"
+                      : "Photo added.",
+                )
           }
         />
       )}
@@ -281,7 +291,17 @@ function Thumb({ photo, small = false }: { photo: StepPhoto; small?: boolean }) 
   );
 }
 
-function NotesBox({ jobId, initial, onSaved }: { jobId: string; initial: string; onSaved: () => void }) {
+function NotesBox({
+  jobId,
+  initial,
+  onSaved,
+  onConflict,
+}: {
+  jobId: string;
+  initial: string;
+  onSaved: () => void;
+  onConflict: (message: string) => void;
+}) {
   const [notes, setNotes] = useState(initial);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -297,6 +317,7 @@ function NotesBox({ jobId, initial, onSaved }: { jobId: string; initial: string;
         body: JSON.stringify({ notes }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 409 || res.status === 404) return onConflict(data.error ?? "This job changed in the meantime.");
       if (!res.ok) throw new Error(data.error ?? "Saving failed.");
       onSaved();
     } catch (e) {

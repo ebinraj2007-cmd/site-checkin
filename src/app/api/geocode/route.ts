@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { apiUser, fail } from "@/lib/api";
-import { isValidLatLng, parseLocation, type LatLng } from "@/lib/geo";
+import { isGoogleMapsFetchable, isValidLatLng, parseLocation, type LatLng } from "@/lib/geo";
 
 // Address search (OpenStreetMap Nominatim) and Google Maps short-link expansion for
 // the job location picker. Managers only; one lookup per button press.
@@ -39,16 +39,14 @@ export async function GET(req: Request) {
   return fail(400, "Nothing to look up.");
 }
 
-const GOOGLE_HOST = /(^|\.)(goo\.gl|google\.[a-z]{2,3}(\.[a-z]{2})?)$/;
-
-// Follows up to 5 redirects, only ever to Google hosts.
+// Follows up to 5 redirects, fetching only Google Maps hosts; stops at the first address
+// that has coordinates in it.
 async function expandGoogleMapsLink(start: string): Promise<LatLng | null> {
   let current = start;
   for (let i = 0; i < 5; i++) {
-    const url = new URL(current);
-    if (url.protocol !== "https:" || !GOOGLE_HOST.test(url.hostname)) return null;
     const direct = parseLocation(current);
     if (direct) return direct;
+    if (!isGoogleMapsFetchable(current)) return null;
     const res = await fetch(current, {
       redirect: "manual",
       headers: { "User-Agent": "Mozilla/5.0 (compatible; site-checkin)" },

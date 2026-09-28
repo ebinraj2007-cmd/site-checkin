@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { JobForm } from "@/components/JobForm";
 import { PageTitle } from "@/components/ui";
 import { requireManager } from "@/lib/auth";
@@ -17,6 +17,7 @@ export default async function EditJobPage(props: PageProps<"/m/jobs/[id]/edit">)
   const { id } = await props.params;
   const [job, settings, workers] = await Promise.all([getJob(id), getSettings(), workerOptions()]);
   if (!job) notFound();
+  if (job.status !== "assigned" && job.status !== "arrived") redirect(`/m/jobs/${job.id}`); // reopen first
   // Keep a deactivated worker selectable so saving doesn't silently unassign.
   if (job.assigned_to && !workers.some((w) => w.id === job.assigned_to)) {
     workers.push({ id: job.assigned_to, name: `${job.worker_name} (inactive)`, role: "worker", alerts: false });
@@ -31,7 +32,7 @@ export default async function EditJobPage(props: PageProps<"/m/jobs/[id]/edit">)
         timezone={settings.timezone}
         submitLabel="Save changes"
         workerLocked={
-          job.status === "arrived"
+          job.arrived_at
             ? `${job.worker_name ?? "The worker"} is on site now. To send someone else, cancel this job and create a new one.`
             : undefined
         }

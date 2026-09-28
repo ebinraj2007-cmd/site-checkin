@@ -28,10 +28,38 @@ function sameOrigin(req: Request): boolean {
   }
 }
 
-// Refuse oversized bodies before reading them (Vercel caps at 4.5 MB; a self-hosted
-// server would otherwise buffer whatever it is sent).
-export function tooLarge(req: Request, maxBytes: number): boolean {
+function tooLarge(req: Request, maxBytes: number): boolean {
   return Number(req.headers.get("content-length") ?? 0) > maxBytes;
+}
+
+// Reads a request body, refusing it once it passes maxBytes: by Content-Length first, and
+// by counting the bytes as they arrive, since a chunked upload doesn't send a length
+// (Vercel caps bodies at 4.5 MB; a self-hosted server would buffer whatever it is sent).
+// Returns the body to call .formData() or .json() on, or null if it was too large.
+export async function readBody(req: Request, maxBytes: number): Promise<Pick<Response, "formData" | "json"> | null> {
+  if (tooLarge(req, maxBytes)) return null;
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = req.body?.getReader();
+  if (reader) {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new Response(bytes, { headers: { "Content-Type": req.headers.get("content-type") ?? "" } });
 }
 
 export function numberField(value: FormDataEntryValue | null): number | null {

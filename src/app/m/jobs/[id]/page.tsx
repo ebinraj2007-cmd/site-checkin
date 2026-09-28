@@ -8,7 +8,7 @@ import { Alert, Badge, buttonClass, Card, LinkButton, StatusBadge, WhatsAppIcon 
 import { appUrl } from "@/lib/app-url";
 import { requireManager } from "@/lib/auth";
 import { directionsLink, formatDistance } from "@/lib/geo";
-import { getJob, getJobPhotos, isLate, missingSteps } from "@/lib/jobs";
+import { getJob, getJobPhotos, isCurrentVisit, isLate, missingSteps, overlappingVisits } from "@/lib/jobs";
 import { jobMessage } from "@/lib/messages";
 import { displayPhone, telLink, whatsappLink } from "@/lib/phone";
 import { getSettings } from "@/lib/settings";
@@ -18,24 +18,30 @@ import { cancelJob, reopenJob } from "../../actions";
 
 export const metadata: Metadata = { title: "Job" };
 
+const KIND_LABEL = { arrival: "Arrival", work: "Work", leave: "Leaving" } as const;
+
 export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
   await requireManager();
   const { id } = await props.params;
   const search = await props.searchParams;
   const job = await getJob(id);
   if (!job) notFound();
-  const [photos, settings, worker, baseUrl] = await Promise.all([
+  const [photos, settings, worker, baseUrl, overlaps] = await Promise.all([
     getJobPhotos(job.id),
     getSettings(),
     job.assigned_to ? getUserRow(job.assigned_to) : null,
     appUrl(),
+    overlappingVisits(job.id),
   ]);
   const tz = settings.timezone;
   const now = new Date();
   const late = isLate(job, now);
-  const arrival = photos.find((p) => p.kind === "arrival");
-  const leave = photos.find((p) => p.kind === "leave");
-  const work = photos.filter((p) => p.kind === "work");
+  // A reopened job starts a new visit; photos from before stay listed separately.
+  const visit = photos.filter((p) => isCurrentVisit(job, p));
+  const earlier = photos.filter((p) => !isCurrentVisit(job, p));
+  const arrival = visit.findLast((p) => p.kind === "arrival");
+  const leave = visit.findLast((p) => p.kind === "leave");
+  const work = visit.filter((p) => p.kind === "work");
   const open = job.status === "assigned" || job.status === "arrived";
   const whatsapp = job.worker_phone
     ? whatsappLink(job.worker_phone, jobMessage(job, baseUrl, tz, job.worker_name))
@@ -46,10 +52,9 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
       lat: p.lat!,
       lng: p.lng!,
       kind: p.kind,
-      label: `${{ arrival: "Arrival", work: "Work", leave: "Leaving" }[p.kind]} photo · ${formatTime(p.created_at, tz)}`,
+      label: `${KIND_LABEL[p.kind]} photo · ${formatDateTime(p.created_at, tz, now)}`,
     }));
-  const stillNeeded = job.status === "arrived" ? missingSteps(job, photos) : [];
-  const onSiteFor = job.arrived_at ? (job.left_at ?? job.completed_at ?? (job.status === "arrived" ? now : null)) : null;
+  const stillNeeded = job.status === "arrived" ? missingSteps(job, visit) : [];
 
   return (
     <div className="space-y-4">
@@ -73,7 +78,10 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
           )}
           {!open && (
             <form action={reopenJob.bind(null, job.id)}>
-              <ConfirmButton variant="secondary" confirm="Reopen this job so the worker can continue it?">
+              <ConfirmButton
+                variant="secondary"
+                confirm="Reopen this job? It starts again: the worker sends a new arrival photo from the site."
+              >
                 Reopen
               </ConfirmButton>
             </form>
@@ -209,13 +217,50 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
               <Step title="Finished" time={job.completed_at} tz={tz} />
             )}
             {stillNeeded.length > 0 && <Alert tone="amber">Still to send: {stillNeeded.join(", ")}.</Alert>}
-            {job.arrived_at && onSiteFor && (
+            {job.status === "arrived" && job.arrived_at && (
               <p className="text-sm text-slate-600">
-                Time on site: <span className="font-semibold">{formatDuration(onSiteFor.getTime() - job.arrived_at.getTime())}</span>
-                {job.status === "arrived" && " so far"}
+                On site for <span className="font-semibold">{formatDuration(now.getTime() - job.arrived_at.getTime())}</span> so
+                far.
               </p>
             )}
+            {job.arrived_at && job.left_at && (
+              <p className="text-sm text-slate-600">
+                Time on site: <span className="font-semibold">{formatDuration(job.left_at.getTime() - job.arrived_at.getTime())}</span>{" "}
+                <span className="text-slate-500">(arrival photo to leaving photo)</span>
+              </p>
+            )}
+            {job.status === "completed" && job.arrived_at && !job.left_at && (
+              <p className="text-sm text-slate-500">
+                No time on site: this job didn&apos;t need a leaving photo, and Finish can be tapped from anywhere.
+              </p>
+            )}
+            {overlaps.length > 0 && (
+              <Alert tone="red">
+                During this visit {job.worker_name ?? "the worker"} was also checked in at{" "}
+                {overlaps.map((o, i) => (
+                  <span key={o.other_id}>
+                    {i > 0 && ", "}
+                    <Link href={`/m/jobs/${o.other_id}`} className="font-semibold underline">
+                      {o.other_title}
+                    </Link>{" "}
+                    ({formatDistance(o.distance_m)} away)
+                  </span>
+                ))}
+                . Nobody can be at both, so check the times before paying for both.
+              </Alert>
+            )}
           </Card>
+          {earlier.length > 0 && (
+            <Card className="space-y-3">
+              <h2 className="text-base font-bold">Earlier visits</h2>
+              <p className="text-sm text-slate-500">Sent before the job was reopened. They don&apos;t count towards this visit.</p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {earlier.map((p) => (
+                  <PhotoTile key={p.id} photo={p} tz={tz} radius={job.radius_m} label={`${KIND_LABEL[p.kind]} photo`} />
+                ))}
+              </div>
+            </Card>
+          )}
         </div>
       </div>
     </div>

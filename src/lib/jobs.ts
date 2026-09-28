@@ -1,5 +1,6 @@
 import "server-only";
 import { query, queryOne } from "./db";
+import { distanceMeters } from "./geo";
 import { isUuid, type Job, type JobPhoto } from "./job-rules";
 
 export * from "./job-rules";
@@ -100,6 +101,49 @@ export async function countCompletedBetween(from: Date, to: Date): Promise<numbe
     [from.toISOString(), to.toISOString()],
   );
   return row?.n ?? 0;
+}
+
+// Check-ins this far apart can't be the same person at the same time.
+const OVERLAP_DISTANCE_M = 500;
+
+export type Overlap = { job_id: string; other_id: string; other_title: string; distance_m: number };
+
+// Visits of the same worker that overlap in time at sites more than 500 m apart: the
+// worker can't have been at both, so the hours must not be counted twice. A visit runs
+// from the arrival photo to the leaving photo, or until now while the worker is on site.
+// Without a leaving photo only the arrival moment is known, so that is the whole visit.
+export async function overlappingVisits(jobId?: string): Promise<Overlap[]> {
+  if (jobId !== undefined && !isUuid(jobId)) return [];
+  const rows = await query<{
+    job_id: string;
+    other_id: string;
+    other_title: string;
+    a_lat: number;
+    a_lng: number;
+    b_lat: number;
+    b_lng: number;
+  }>(
+    `WITH v AS (
+       SELECT id, title, assigned_to, site_lat, site_lng, arrived_at AS starts,
+              COALESCE(left_at, CASE WHEN status = 'arrived' THEN now() END, arrived_at) AS ends
+         FROM jobs WHERE arrived_at IS NOT NULL AND assigned_to IS NOT NULL
+     )
+     SELECT a.id AS job_id, b.id AS other_id, b.title AS other_title,
+            a.site_lat AS a_lat, a.site_lng AS a_lng, b.site_lat AS b_lat, b.site_lng AS b_lng
+       FROM v a JOIN v b ON b.assigned_to = a.assigned_to AND b.id <> a.id
+        AND b.starts <= a.ends AND a.starts <= b.ends
+      ${jobId ? "WHERE a.id = $1" : ""}
+      ORDER BY b.starts`,
+    jobId ? [jobId] : [],
+  );
+  return rows
+    .map((r) => ({
+      job_id: r.job_id,
+      other_id: r.other_id,
+      other_title: r.other_title,
+      distance_m: distanceMeters({ lat: r.a_lat, lng: r.a_lng }, { lat: r.b_lat, lng: r.b_lng }),
+    }))
+    .filter((o) => o.distance_m > OVERLAP_DISTANCE_M);
 }
 
 // Where the map starts when creating a job: the most recent job's site.

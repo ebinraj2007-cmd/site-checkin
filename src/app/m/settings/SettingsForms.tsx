@@ -1,7 +1,8 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { ActionResult } from "@/components/ActionResult";
+import { resaveSubscription } from "@/components/PushSetup";
 import { SubmitButton } from "@/components/SubmitButton";
 import { useFormAction } from "@/components/useFormAction";
 import { Field, inputClass } from "@/components/ui";
@@ -47,6 +48,10 @@ export function SettingsForm({ values }: { values: Values }) {
 
 export function ChangePinForm() {
   const [state, onSubmit, pending] = useFormAction(changeMyPin, null);
+  // The change turned alerts off everywhere; this device keeps them.
+  useEffect(() => {
+    if (state?.ok) resaveSubscription().catch(() => {});
+  }, [state]);
   return (
     <form onSubmit={onSubmit} key={state?.ok ? "done" : "form"} className="space-y-3">
       <div className="grid gap-3 sm:grid-cols-3">
