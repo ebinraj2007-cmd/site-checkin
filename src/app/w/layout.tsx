@@ -1,8 +1,11 @@
 import Link from "next/link";
 import { LogoutButton } from "@/components/LogoutButton";
+import { Notice } from "@/components/Notice";
 import { buttonClass } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
+import { NOTICE_VERSION } from "@/lib/notice";
 import { getSettings } from "@/lib/settings";
+import { acceptNotice } from "./actions";
 
 export default async function WorkerLayout({ children }: LayoutProps<"/w">) {
   const [me, settings] = await Promise.all([requireUser(), getSettings()]);
@@ -22,7 +25,10 @@ export default async function WorkerLayout({ children }: LayoutProps<"/w">) {
           <LogoutButton />
         </div>
       </header>
-      <main className="mx-auto max-w-xl px-4 py-4">{children}</main>
+      <main className="mx-auto max-w-xl px-4 py-4">
+        {/* Everyone reads what the app records before using it. */}
+        {me.notice_version < NOTICE_VERSION ? <Notice company={settings.companyName} accept={acceptNotice} /> : children}
+      </main>
     </div>
   );
 }

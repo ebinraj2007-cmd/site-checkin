@@ -1,17 +1,25 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { JobRow } from "@/components/JobRow";
+import { PasskeySetup } from "@/components/PasskeySetup";
 import { PushSetup } from "@/components/PushSetup";
 import { Empty } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { jobsForWorker } from "@/lib/jobs";
-import { getSettings } from "@/lib/settings";
+import { listPasskeys } from "@/lib/passkeys";
+import { getSettings, passkeysRequired } from "@/lib/settings";
 import { dayRange } from "@/lib/time";
 
 export const metadata: Metadata = { title: "My jobs" };
 
 export default async function MyJobs() {
   const me = await requireUser();
-  const [{ timezone }, jobs] = await Promise.all([getSettings(), jobsForWorker(me.id)]);
+  const [{ timezone }, jobs, passkeys, required] = await Promise.all([
+    getSettings(),
+    jobsForWorker(me.id),
+    listPasskeys(me.id),
+    passkeysRequired(),
+  ]);
   const now = new Date();
   const [, endOfToday] = dayRange(timezone, now);
   const onSite = jobs.filter((j) => j.status === "arrived");
@@ -24,10 +32,16 @@ export default async function MyJobs() {
   return (
     <div className="space-y-5">
       <PushSetup compact />
+      <PasskeySetup compact count={passkeys.length} required={required && me.role === "worker"} />
       {onSite.length > 0 && <Group title="You're on site">{onSite.map(row)}</Group>}
       <Group title="Today">{today.length ? today.map(row) : <Empty>No jobs for today yet. New jobs will show up here.</Empty>}</Group>
       {later.length > 0 && <Group title="Coming up">{later.map(row)}</Group>}
       {done.length > 0 && <Group title="Done this week">{done.map(row)}</Group>}
+      <p className="pt-2 text-center text-xs">
+        <Link href="/w/notice" className="font-semibold text-slate-500 underline">
+          What this app records
+        </Link>
+      </p>
     </div>
   );
 }

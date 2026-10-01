@@ -24,6 +24,8 @@ export type JobDefaults = {
   requireWorkPhotos: boolean;
   requireNotes: boolean;
   requireSignature: boolean;
+  requireSelfie: boolean;
+  requireCustomerCode: boolean;
 };
 
 const RADII = [50, 100, 150, 200, 300, 500, 1000];
@@ -142,8 +144,10 @@ export function JobForm({
         <h2 className="text-base font-bold">What the worker must send</h2>
         <div className="space-y-2">
           <Check name="" checked disabled label="Arrival photo" detail="Taken with the camera at the site, stamped with time and GPS." />
+          <Check name="require_selfie" defaultChecked={defaults.requireSelfie} label="Selfie" detail="A quick front-camera selfie with the arrival and leaving photos, so you see who was there." />
           <Check name="require_work_photos" defaultChecked={defaults.requireWorkPhotos} label="Work photos" detail="Before/after or finished-work photos." />
           <Check name="require_notes" defaultChecked={defaults.requireNotes} label="Notes" detail="A short report of what was done." />
+          <Check name="require_customer_code" defaultChecked={defaults.requireCustomerCode} label="Customer code" detail="You send the customer a 4-digit code; they give it to the worker when the work is done. Shows the worker was really there." />
           <Check name="require_signature" defaultChecked={defaults.requireSignature} label="Customer signature" detail="The customer signs on the worker's screen." />
           <Check name="require_leave_photo" defaultChecked={defaults.requireLeavePhoto} label="Leaving photo" detail="Taken at the site when leaving. Without it, the job has no time on site." />
         </div>

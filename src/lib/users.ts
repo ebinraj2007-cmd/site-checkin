@@ -10,12 +10,14 @@ export type UserRow = {
   active: boolean;
   created_at: Date;
   devices: number; // phones with job alerts turned on
+  passkeys: number; // fingerprint / face logins
   open_jobs: number;
 };
 
 const USER_SELECT = `
   SELECT u.id, u.name, u.phone, u.role, u.active, u.created_at,
          (SELECT count(*)::int FROM push_subscriptions s WHERE s.user_id = u.id) AS devices,
+         (SELECT count(*)::int FROM passkeys p WHERE p.user_id = u.id) AS passkeys,
          (SELECT count(*)::int FROM jobs j WHERE j.assigned_to = u.id AND j.status IN ('assigned', 'arrived')) AS open_jobs
     FROM users u`;
 

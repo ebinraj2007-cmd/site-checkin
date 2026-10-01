@@ -6,7 +6,7 @@ import { resaveSubscription } from "@/components/PushSetup";
 import { SubmitButton } from "@/components/SubmitButton";
 import { useFormAction } from "@/components/useFormAction";
 import { Field, inputClass } from "@/components/ui";
-import { changeMyPin, saveSettingsAction } from "../actions";
+import { changeMyPin, saveSecurity, saveSettingsAction } from "../actions";
 
 type Values = { companyName: string; countryCode: string; timezone: string; defaultRadius: number };
 
@@ -66,6 +66,33 @@ export function ChangePinForm() {
         </Field>
       </div>
       <SubmitButton pending={pending} variant="secondary">Change PIN</SubmitButton>
+      <ActionResult state={state} />
+    </form>
+  );
+}
+
+export function SecurityForm({ requirePasskeys }: { requirePasskeys: boolean }) {
+  const [state, onSubmit, pending] = useFormAction(saveSecurity, null);
+  return (
+    <form onSubmit={onSubmit} className="space-y-3">
+      <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-3 hover:bg-slate-50">
+        <input
+          type="checkbox"
+          name="require_passkeys"
+          defaultChecked={requirePasskeys}
+          className="mt-0.5 h-5 w-5 shrink-0 accent-brand-700"
+        />
+        <span>
+          <span className="block text-sm font-semibold text-slate-800">Workers must log in with fingerprint or face</span>
+          <span className="block text-xs text-slate-500">
+            Stops PINs being shared so someone else checks in. Workers are asked to set it up on their phone; once they have,
+            their PIN no longer works. If a phone is lost, reset that worker&apos;s PIN.
+          </span>
+        </span>
+      </label>
+      <SubmitButton pending={pending} variant="secondary">
+        Save
+      </SubmitButton>
       <ActionResult state={state} />
     </form>
   );

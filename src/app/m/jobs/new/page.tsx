@@ -48,6 +48,8 @@ export default async function NewJobPage() {
           requireWorkPhotos: false,
           requireNotes: false,
           requireSignature: false,
+          requireSelfie: false,
+          requireCustomerCode: false,
         }}
       />
     </div>

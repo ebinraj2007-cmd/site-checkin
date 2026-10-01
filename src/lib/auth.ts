@@ -5,14 +5,16 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
 import { query, queryOne } from "./db";
+import { passkeysRequired } from "./settings";
 
 export type Role = "manager" | "worker";
-export type SessionUser = { id: string; name: string; phone: string; role: Role };
+export type SessionUser = { id: string; name: string; phone: string; role: Role; notice_version: number };
 
 const SESSION_COOKIE = "sc_session";
 const SESSION_DAYS = 180; // workers stay signed in on their phone
 const DEVICE_COOKIE = "sc_device"; // survives logout; see checkLogin
 const DEVICE_DAYS = 400; // the longest browsers keep a cookie
+const BROWSER_COOKIE = "sc_browser"; // one random ID per browser, whoever logs in on it
 const MAX_DEVICES = 10;
 const MAX_FAILED_LOGINS = 5;
 const LOCK_MINUTES = 15;
@@ -54,13 +56,17 @@ function tokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export async function startSession(userId: string) {
+// `method`: how the person proved who they are. While the company requires fingerprint or
+// face login, a worker's PIN sessions stop working once they have a passkey (see
+// getSessionUser), including ones started before.
+export async function startSession(userId: string, method: "pin" | "passkey" = "pin") {
   const token = randomBytes(32).toString("base64url");
   const expires = new Date(Date.now() + SESSION_DAYS * 86_400_000);
-  await query("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)", [
+  await query("INSERT INTO sessions (token_hash, user_id, expires_at, method) VALUES ($1, $2, $3, $4)", [
     tokenHash(token),
     userId,
     expires.toISOString(),
+    method,
   ]);
   (await cookies()).set(SESSION_COOKIE, token, {
     httpOnly: true,
@@ -69,6 +75,25 @@ export async function startSession(userId: string) {
     path: "/",
     expires,
   });
+  await browserId();
+}
+
+// A hash of this browser's random ID, set on first use and kept across logins and
+// logouts. Photos record it, so one phone sending check-ins for two people shows up.
+export async function browserId(): Promise<string> {
+  const store = await cookies();
+  let id = store.get(BROWSER_COOKIE)?.value;
+  if (!id || !/^[A-Za-z0-9_-]{43}$/.test(id)) {
+    id = randomBytes(32).toString("base64url");
+    store.set(BROWSER_COOKIE, id, {
+      httpOnly: true,
+      secure: secureCookies,
+      sameSite: "lax",
+      path: "/",
+      maxAge: DEVICE_DAYS * 86_400,
+    });
+  }
+  return tokenHash(id);
 }
 
 export async function endSession() {
@@ -76,6 +101,13 @@ export async function endSession() {
   const token = store.get(SESSION_COOKIE)?.value;
   if (token) await query("DELETE FROM sessions WHERE token_hash = $1", [tokenHash(token)]);
   store.delete(SESSION_COOKIE);
+}
+
+// This browser's session has just made a passkey on this device: it counts as a passkey
+// login from now on.
+export async function markSessionPasskey() {
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (token) await query("UPDATE sessions SET method = 'passkey' WHERE token_hash = $1", [tokenHash(token)]);
 }
 
 export async function endAllSessions(userId: string) {
@@ -133,9 +165,12 @@ export const getSessionUser = cache(async (): Promise<SessionUser | null> => {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   if (!token) return null;
   return queryOne<SessionUser>(
-    `SELECT u.id, u.name, u.phone, u.role
+    `SELECT u.id, u.name, u.phone, u.role, u.notice_version
        FROM sessions s JOIN users u ON u.id = s.user_id
-      WHERE s.token_hash = $1 AND s.expires_at > now() AND u.active`,
+      WHERE s.token_hash = $1 AND s.expires_at > now() AND u.active
+        AND NOT (s.method = 'pin' AND u.role = 'worker'
+                 AND EXISTS (SELECT 1 FROM settings WHERE key = 'require_passkeys' AND value = '1')
+                 AND EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = u.id))`,
     [tokenHash(token)],
   );
 });
@@ -156,8 +191,14 @@ export async function hasAnyUser(): Promise<boolean> {
   return (await queryOne("SELECT 1 FROM users LIMIT 1")) !== null;
 }
 
-type LoginRow = SessionUser & { pin_hash: string; failed_logins: number };
-export type LoginResult = { ok: true; user: SessionUser } | { ok: false; error: string; locked: boolean };
+export type LoginUser = Pick<SessionUser, "id" | "name" | "phone" | "role">;
+type LoginRow = LoginUser & { pin_hash: string; failed_logins: number; has_passkey: boolean };
+export type LoginResult = { ok: true; user: LoginUser } | { ok: false; error: string; locked: boolean };
+
+// A worker with a passkey typed the right PIN while the company requires fingerprint or
+// face login (see passkeys.ts).
+export const USE_PASSKEY =
+  "Your company asks you to log in with your fingerprint or face: tap the button above. New phone? Ask your manager to reset your PIN.";
 
 // A count of wrong PINs with a lock. `reserve` takes one try (null: unknown number, or
 // none left), `lock` starts the lock once the tries are used up, `reset` clears it.
@@ -179,7 +220,8 @@ function numberCounter(phone: string): Counter {
                 locked_until = CASE WHEN locked_until <= now() THEN NULL ELSE locked_until END
           WHERE phone = $1 AND active
             AND (failed_logins < $2 OR locked_until <= now())
-          RETURNING id, name, phone, role, pin_hash, failed_logins`,
+          RETURNING id, name, phone, role, pin_hash, failed_logins,
+                    EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = users.id) AS has_passkey`,
         [phone, MAX_FAILED_LOGINS],
       ),
     lock: async () =>
@@ -207,7 +249,8 @@ function deviceCounter(device: string): Counter {
            FROM users u
           WHERE d.token_hash = $1 AND u.id = d.user_id AND u.active
             AND (d.failed_logins < $2 OR d.locked_until <= now())
-          RETURNING u.id, u.name, u.phone, u.role, u.pin_hash, d.failed_logins`,
+          RETURNING u.id, u.name, u.phone, u.role, u.pin_hash, d.failed_logins,
+                    EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = u.id) AS has_passkey`,
         [device, MAX_FAILED_LOGINS],
       ),
     lock: async () =>
@@ -253,5 +296,8 @@ export async function checkLogin(phone: string, pin: string, device: string | nu
     return { ok: false, error: WRONG_LOGIN, locked };
   }
   await counter.reset();
+  if (row.role === "worker" && row.has_passkey && (await passkeysRequired())) {
+    return { ok: false, error: USE_PASSKEY, locked: false };
+  }
   return { ok: true, user: { id: row.id, name: row.name, phone: row.phone, role: row.role } };
 }

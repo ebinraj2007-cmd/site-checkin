@@ -14,8 +14,12 @@ No app store: workers open a link and add it to their home screen.
 - Create a job: title, worker, time, address with a map pin, and the check-in distance
   (for example "within 150 m").
 - Choose what the worker must send for each job. The arrival photo is always required;
-  work photos, notes, a customer signature and a leaving photo are optional per job (the
-  leaving photo is on by default: without it a job has no time on site).
+  a selfie, work photos, notes, a customer code, a customer signature and a leaving photo
+  are optional per job (the leaving photo is on by default: without it a job has no time on
+  site).
+- **Customer code:** the job gets a 4-digit code that you send to the customer (one tap on
+  WhatsApp). The customer gives it to the worker when the work is done; the worker never
+  sees it otherwise, so a correct code shows they were really there.
 - The worker gets a phone notification. Workers who haven't turned notifications on get a
   **Send job on WhatsApp** button with the job, directions and link filled in.
 - **Today** shows late jobs (not checked in 15 minutes after the start time), who is on site
@@ -24,15 +28,31 @@ No app store: workers open a link and add it to their home screen.
   where each photo was taken, notes, the signature and time on site (arrival photo to
   leaving photo). A job is flagged if the same worker was checked in at another site more
   than 500 m away during the visit.
-- **Export CSV** of jobs and check-in times (payroll, customer records).
+- **Review** lists check-ins that need a look: photos a worker sent for approval, photos
+  with warning signs (see below) and customer steps skipped with a reason. Approve or
+  reject each with a note for the worker; approving a "the pin is in the wrong place"
+  photo can move the job pin there. Until approved, these don't count for time on site.
+- **Export CSV** of jobs and check-in times (payroll, customer records), with the review
+  state, warning signs, customer code and skipped steps.
+- **Settings → Check-in security:** require workers to log in with their fingerprint or
+  face instead of a PIN.
 
 **Worker**
 
+0. The first time: reads what the app records about them (location only at photo moments,
+   photos, selfies, times, phone ID, login attempts) and taps **I understand**.
 1. Opens the job → **Directions in Google Maps**.
-2. At the site: **I'm here: take arrival photo**. The live camera opens; the shutter only
-   works inside the job's check-in circle.
-3. Work photos / notes / customer signature, if the job asks for them.
+2. At the site: **I'm here: take arrival photo** (and a selfie, if the job asks). The live
+   camera opens; the shutter only works inside the job's check-in circle. If the worker
+   really is there but can't check in (wrong pin, no GPS indoors, a site bigger than the
+   circle), **Can't check in here? Send for approval** takes the photo anyway with a reason,
+   for the manager to approve. They carry on with the job meanwhile.
+3. Work photos / notes / customer code / customer signature, if the job asks for them. When
+   the customer isn't there, **Skip with a reason** lets the worker finish; the manager
+   reviews it.
 4. **Take leaving photo & finish** (or **Finish job**).
+
+Workers can set up **fingerprint or face login** (a passkey) on their phone and skip the PIN.
 
 ## How a check-in is protected
 
@@ -52,9 +72,36 @@ No app store: workers open a link and add it to their home screen.
   circle. A job finished with the Finish button (no leaving photo) has no time on site, since
   Finish can be tapped anywhere. Check-ins that overlap at sites far apart are flagged on the
   job and in the CSV. Reopening a job starts a new visit with a new arrival photo.
-- **Limit:** the location comes from the phone, and no web app can detect a fake-GPS app on a
-  phone set up to spoof its location. The photo itself (what's in it, and where the map dot
-  is) is the evidence to look at.
+- **Warning signs.** Every photo is also checked on the server; strong signs send it to
+  **Review** (it counts once approved), the rest are shown on the photo:
+  - the same photo file sent before, or a look-alike of an earlier photo (re-saved,
+    re-stamped or brightened copies are caught; two jobs in one building aren't flagged);
+  - a dark or blank photo;
+  - a GPS reading exactly on the job pin (fake-location apps are often set to it);
+  - a check-in further from the worker's previous one than a car could drive in the time;
+  - a phone that sent another person's check-in in the last 12 hours (a random ID kept in
+    the browser);
+  - and, as notes only: the same GPS point to the last digit as an earlier photo, moving
+    faster than 90 km/h, GPS more precise than phones manage, a GPS reading older than the
+    photo, and an internet connection from another country.
+- **Customer code and selfie.** A code the customer gives in person, and a front-camera
+  selfie next to the arrival and leaving photos, make someone else checking in for the
+  worker much harder. A reopened job gets a new code, so last visit's code proves
+  nothing. (The app shows the selfie to the manager; it doesn't do face recognition.)
+- **Fingerprint or face login.** With **Workers must log in with fingerprint or face** on, a
+  worker who has set it up can no longer use their PIN, and logins already made with the
+  PIN (say, on a colleague's phone) stop working too. Workers can't switch it off
+  themselves, and managers get a notification whenever a worker sets it up on a device.
+  A lost phone: reset the worker's PIN, which also removes their passkeys (a manager's
+  recovery with the setup code, or a manager's own PIN change, removes theirs). Managers
+  always keep their PIN.
+- **Reviews.** Rejecting an arrival photo while the worker is on site sends them back to
+  check in again; rejecting the leaving photo reopens the job for a new one. When there is
+  more than one manager, nobody reviews their own check-ins.
+- **Limit:** the location comes from the phone, and no web app can directly detect a
+  fake-GPS app on a phone set up to spoof its location. The warning signs above catch the
+  common tricks, and the photo itself (what's in it, and where the map dot is) is the
+  evidence to look at.
 - **Logins:** 6–8 digit PINs; after 5 wrong PINs the number is locked for 15 minutes, even
   when guesses are sent all at once. A phone that has logged in before keeps its own count,
   so someone guessing elsewhere can't lock a person out of their own phone. Resetting a
@@ -119,8 +166,8 @@ OpenStreetMap's free services, which are meant for light use.
 ```bash
 npm install
 npm run dev          # http://localhost:3000, with an embedded Postgres in .data/pglite
-npm test             # unit tests (GPS and photo rules, logins, storage, push, phone numbers)
-npm run test:e2e     # build + browser tests: fake camera and GPS, full manager/worker flow
+npm test             # unit tests (GPS and photo rules, warning signs, passkeys, logins, storage, push)
+npm run test:e2e     # build + browser tests: fake camera, GPS and fingerprint reader, full flows
 npm run lint
 npm run typecheck
 ```
@@ -146,16 +193,23 @@ database sessions (scrypt, lockout after 5 wrong PINs) · Web Push with VAPID (`
 
 | Path | What's there |
 | --- | --- |
-| `src/app/m/` | Manager screens: Today, Jobs, Workers, Settings, and their server actions |
-| `src/app/w/` | Worker screens: my jobs, the job with its steps |
-| `src/app/api/` | Photo / signature / notes / finish uploads, protected file access, push, address search, CSV |
+| `src/app/m/` | Manager screens: Today, Jobs, Review, Workers, Settings, and their server actions |
+| `src/app/w/` | Worker screens: my jobs, the job with its steps, what the app records |
+| `src/app/api/` | Photo / signature / notes / code / skip / finish uploads, passkeys, protected file access, push, address search, CSV |
 | `src/lib/geo.ts` | The check-in rule (`checkOnSite`), used by the phone and the server |
+| `src/lib/fraud.ts`, `src/lib/photo-hash.ts` | The warning signs, and the photo fingerprints they use |
+| `src/lib/webauthn.ts`, `src/lib/passkeys.ts` | Fingerprint / face login (passkeys), no extra libraries |
 | `src/lib/db.ts` | Postgres / PGlite adapter and migrations |
 | `src/lib/storage.ts` | Photo storage (Supabase Storage or the database) |
 | `src/components/CameraCapture.tsx` | Live camera, GPS gate and photo stamp |
 
 ## Ideas for later
 
+- Face matching of the selfie against the worker's photo. Left out on purpose: face data is
+  sensitive personal data in most countries (e.g. the UAE's PDPL, India's DPDP Act, GDPR),
+  and needs consent, a lawful reason and care with accuracy.
+- NFC tags at fixed sites (tap to check in): needs tags fitted at each site and a phone
+  with NFC; Chrome on Android only.
 - Reminders and "late" alerts pushed to managers (needs a scheduler, e.g. Supabase cron).
 - Fully automatic WhatsApp messages through the WhatsApp Business API (needs Meta approval,
   paid per message).

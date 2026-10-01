@@ -21,7 +21,8 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(shotsDir, `${name}.png`), fullPage: true });
 }
 
-// A real JPEG, drawn and encoded by the browser like the app's camera does.
+// A real JPEG, drawn and encoded by the browser like the app's camera does. Every call
+// draws a different picture, as a camera would (identical photos get flagged).
 async function jpeg(page: Page): Promise<Buffer> {
   const b64 = await page.evaluate(() => {
     const canvas = document.createElement("canvas");
@@ -29,8 +30,8 @@ async function jpeg(page: Page): Promise<Buffer> {
     canvas.height = 240;
     const ctx = canvas.getContext("2d")!;
     for (let i = 0; i < 60; i++) {
-      ctx.fillStyle = `hsl(${(i * 47) % 360} 70% 50%)`;
-      ctx.fillRect((i * 53) % 320, (i * 29) % 240, 40, 30);
+      ctx.fillStyle = `hsl(${Math.floor(Math.random() * 360)} 70% 50%)`;
+      ctx.fillRect(Math.random() * 300, Math.random() * 220, 20 + Math.random() * 60, 20 + Math.random() * 50);
     }
     return canvas.toDataURL("image/jpeg", 0.85).split(",")[1];
   });
@@ -44,19 +45,54 @@ const PNG = Buffer.from(
 );
 
 // A photo upload the way the app sends it, for checks the camera screen can't reach.
-async function upload(page: Page, jobId: string, kind: string, where: { latitude: number; longitude: number; accuracy: number }, takenAt = new Date()) {
+async function upload(
+  page: Page,
+  jobId: string,
+  kind: string,
+  where: { latitude: number; longitude: number; accuracy: number },
+  takenAt = new Date(),
+  photo?: Buffer,
+  extra: Record<string, string> = {},
+) {
   return page.request.post(`/api/jobs/${jobId}/photo`, {
     multipart: {
+      ...extra,
       kind,
       lat: String(where.latitude),
       lng: String(where.longitude),
       accuracy: String(where.accuracy),
       live: "1",
       deviceTime: takenAt.toISOString(),
-      photo: { name: "photo.jpg", mimeType: "image/jpeg", buffer: await jpeg(page) },
+      photo: { name: "photo.jpg", mimeType: "image/jpeg", buffer: photo ?? (await jpeg(page)) },
     },
   });
 }
+
+async function logIn(page: Page, phone: string, pin: string) {
+  await page.goto("/login");
+  await page.getByLabel("Phone number").fill(phone);
+  await page.getByLabel("PIN").fill(pin);
+  await page.getByRole("button", { name: "Log in", exact: true }).click();
+}
+
+// A job at `where` for `worker` (Ravi unless said), with extra proof steps ticked or not.
+async function createJob(
+  title: string,
+  where: string,
+  opts: { worker?: string; check?: string[]; uncheck?: string[]; customerPhone?: string } = {},
+) {
+  await manager.goto("/m/jobs/new");
+  await manager.getByLabel("Job title").fill(title);
+  await manager.getByLabel("Worker", { exact: true }).selectOption({ label: opts.worker ?? "Ravi Kumar" });
+  await manager.getByLabel("Paste a Google Maps link or coordinates").fill(where);
+  for (const step of opts.check ?? []) await manager.getByRole("checkbox", { name: new RegExp(`^${step}`) }).check();
+  for (const step of opts.uncheck ?? []) await manager.getByRole("checkbox", { name: new RegExp(`^${step}`) }).uncheck();
+  if (opts.customerPhone) await manager.getByLabel("Customer phone").fill(opts.customerPhone);
+  await manager.getByRole("button", { name: "Create job & notify worker" }).click();
+  await expect(manager).toHaveURL(/created=1/);
+  return manager.url().match(/jobs\/([0-9a-f-]{36})/)![1];
+}
+const AT_SITE = `${SITE.latitude}, ${SITE.longitude}`;
 
 let manager: Page;
 let managerCtx: BrowserContext;
@@ -160,11 +196,16 @@ test("worker logs in and sees the job", async () => {
   await worker.goto("/login");
   await worker.getByLabel("Phone number").fill("0502222222");
   await worker.getByLabel("PIN").fill("000000");
-  await worker.getByRole("button", { name: "Log in" }).click();
+  await worker.getByRole("button", { name: "Log in", exact: true }).click();
   await expect(worker.getByText("Wrong phone number or PIN.")).toBeVisible();
   await worker.getByLabel("PIN").fill("246810");
-  await worker.getByRole("button", { name: "Log in" }).click();
+  await worker.getByRole("button", { name: "Log in", exact: true }).click();
   await expect(worker).toHaveURL(/\/w$/);
+  // First, what the app records about them.
+  await expect(worker.getByRole("heading", { name: "Before you start: what this app records" })).toBeVisible();
+  await expect(worker.getByText(/Your location, only at the moment you take a photo/)).toBeVisible();
+  await shot(worker, "04a-notice");
+  await worker.getByRole("button", { name: "I understand" }).click();
   await expect(worker.getByText("Job alerts are off.")).toBeVisible();
   await shot(worker, "04-worker-home");
   await worker.getByRole("link", { name: new RegExp(JOB_TITLE) }).click();
@@ -398,14 +439,262 @@ test("access rules and push subscriptions", async ({ browser }) => {
   expect(forged.status()).toBe(403);
 });
 
+test("a worker who can't check in sends the photo for approval, and the manager moves the pin", async () => {
+  // The pin was dropped about a kilometre from where the work really is.
+  const id = await createJob("Warehouse stock check", `${FAR.latitude}, ${FAR.longitude}`, { uncheck: ["Leaving photo"] });
+  await workerCtx.setGeolocation(NEAR);
+  await worker.goto(`/w/jobs/${id}`);
+  await worker.getByRole("button", { name: /take arrival photo/ }).click();
+  await expect(worker.getByTestId("gps-status")).toContainText("from the site. Move closer");
+  await worker.getByRole("button", { name: "Can't check in here? Send for approval" }).click();
+  await worker.getByRole("radio", { name: "The job pin is in the wrong place" }).check();
+  await worker.getByLabel("Note for your manager").fill("The pin is on the main road; the warehouse is behind the mall.");
+  await shot(worker, "14-send-for-approval");
+  await worker.getByRole("button", { name: "Continue" }).click();
+  await expect(worker.getByTestId("gps-status")).toContainText("For approval: The job pin is in the wrong place");
+  await worker.getByRole("button", { name: "Take photo" }).click();
+  await worker.getByRole("button", { name: "Send for approval" }).click();
+  await expect(worker.getByText("Arrival sent. Your manager will check it; carry on with the job.")).toBeVisible();
+  await expect(worker.getByText(/Sent for approval \(the job pin is in the wrong place\), your manager will check it/)).toBeVisible();
+
+  // The manager sees it waiting, and approves it with the pin moved to the photo.
+  await manager.goto("/m");
+  await expect(manager.getByRole("link", { name: "1 check-in needs your review →" })).toBeVisible();
+  await manager.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /Review/ }).click();
+  await expect(manager.getByRole("heading", { name: "Ravi Kumar · Arrival photo" })).toBeVisible();
+  await expect(manager.getByText("“The pin is on the main road; the warehouse is behind the mall.”")).toBeVisible();
+  await expect(manager.getByRole("checkbox", { name: "Also move the job pin to where this photo was taken" })).toBeChecked();
+  await shot(manager, "15-review");
+  await manager.getByRole("button", { name: "Approve" }).click();
+  await expect(manager.getByText("Approved, and the job pin now marks where this photo was taken.")).toBeVisible();
+  await manager.goto(`/m/jobs/${id}`);
+  await expect(manager.getByText(/^Approved by Maya Manager/)).toBeVisible();
+  await expect(manager.getByText("0 m from site", { exact: true })).toBeVisible();
+});
+
+test("the customer gives the worker a code that only the customer was sent", async () => {
+  const id = await createJob("Boiler service", AT_SITE, { check: ["Customer code"], uncheck: ["Leaving photo"], customerPhone: "055 333 4444" });
+  const code = (await manager.getByLabel("Customer code").textContent())!.trim();
+  expect(code).toMatch(/^\d{4}$/);
+  const wa = await manager.getByRole("link", { name: /Send code to customer on WhatsApp/ }).getAttribute("href");
+  expect(wa).toMatch(/^https:\/\/wa\.me\/971553334444\?text=/);
+  expect(decodeURIComponent(wa!)).toContain(`*${code}*`);
+
+  expect((await upload(worker, id, "arrival", NEAR)).status()).toBe(200);
+  await worker.goto(`/w/jobs/${id}`);
+  await expect(worker.getByText("Still needed: customer code.")).toBeVisible();
+  await worker.getByLabel("Customer code").fill(code === "0000" ? "1111" : "0000");
+  await worker.getByRole("button", { name: "Check code" }).click();
+  await expect(worker.getByText("That code is wrong. 4 tries left.")).toBeVisible();
+  await worker.getByLabel("Customer code").fill(code);
+  await worker.getByRole("button", { name: "Check code" }).click();
+  await expect(worker.getByText("Customer code confirmed.")).toBeVisible();
+  await worker.getByRole("button", { name: "✓ Finish job" }).click();
+  await expect(worker.getByText("Job finished. Good work!")).toBeVisible();
+
+  await manager.reload();
+  await expect(manager.getByText(/^Given by the customer/)).toBeVisible();
+  await expect(manager.getByText("✓ Customer gave the code")).toBeVisible();
+
+  // A callback visit gets a new code: the old one, known to the worker now, proves nothing.
+  manager.once("dialog", (d) => d.accept());
+  await manager.getByRole("button", { name: "Reopen" }).click();
+  await expect(manager.getByText("Not given yet")).toBeVisible();
+  expect((await manager.getByLabel("Customer code").textContent())!.trim()).not.toBe(code);
+});
+
+test("a customer step can be skipped with a reason, and the manager can refuse the skip", async () => {
+  const id = await createJob("Leak check", AT_SITE, { check: ["Customer signature"], uncheck: ["Leaving photo"] });
+  expect((await upload(worker, id, "arrival", NEAR)).status()).toBe(200);
+  await worker.goto(`/w/jobs/${id}`);
+  await worker.getByRole("button", { name: "Customer can't do this? Skip with a reason" }).click();
+  await worker.getByRole("radio", { name: "The customer isn't here" }).check();
+  await worker.getByRole("button", { name: "Skip and tell my manager" }).click();
+  await expect(worker.getByText("Skipped. Your manager will check it.")).toBeVisible();
+  await expect(worker.getByText(/^Skipped: The customer isn't here · your manager will check it/)).toBeVisible();
+  await expect(worker.getByRole("button", { name: "✓ Finish job" })).toBeEnabled();
+
+  // Refused while the worker is still there: the signature is needed again.
+  await manager.goto("/m/review");
+  await expect(manager.getByRole("heading", { name: "Ravi Kumar · Skipped the customer signature" })).toBeVisible();
+  await manager.getByLabel("Note for the worker").fill("The customer is in the back office.");
+  await manager.getByRole("button", { name: "Reject" }).click();
+  await expect(manager.getByText("Rejected.")).toBeVisible();
+  await worker.reload();
+  await expect(worker.getByText(/Your manager didn't accept skipping the customer signature: “The customer is in the back office.”/)).toBeVisible();
+  await expect(worker.getByText("Still needed: customer signature.")).toBeVisible();
+});
+
+test("a job can ask for a selfie with the arrival photo", async () => {
+  const id = await createJob("Night shift handover", AT_SITE, { check: ["Selfie"], uncheck: ["Leaving photo"] });
+  const without = await upload(worker, id, "arrival", NEAR);
+  expect(without.status()).toBe(400);
+  expect((await without.json()).error).toBe("Take the selfie too.");
+
+  await worker.goto(`/w/jobs/${id}`);
+  await worker.getByRole("button", { name: /take arrival photo/ }).click();
+  await worker.getByRole("button", { name: "Take photo" }).click();
+  await expect(worker.getByText("Now a selfie")).toBeVisible();
+  await worker.getByRole("button", { name: "Take selfie" }).click();
+  await expect(worker.getByRole("img", { name: "Your selfie" })).toBeVisible();
+  await shot(worker, "16-selfie");
+  await worker.getByRole("button", { name: "Send photo" }).click();
+  await expect(worker.getByText("Arrival recorded")).toBeVisible();
+
+  await manager.goto(`/m/jobs/${id}`);
+  const selfie = manager.getByRole("img", { name: "Selfie" });
+  await expect(selfie).toBeVisible();
+  await expect.poll(() => selfie.evaluate((el: HTMLImageElement) => el.naturalWidth)).toBeGreaterThan(100);
+});
+
+test("the same photo sent for two jobs waits for review; a resend to the same job doesn't", async () => {
+  const one = await createJob("Meter reading 1", AT_SITE, { uncheck: ["Leaving photo"] });
+  const two = await createJob("Meter reading 2", AT_SITE, { uncheck: ["Leaving photo"] });
+  const same = await jpeg(worker);
+  expect(await (await upload(worker, one, "arrival", NEAR, new Date(), same)).json()).toMatchObject({ review: "none" });
+  // A resend after a lost answer is the same photo, already saved.
+  expect(await (await upload(worker, one, "arrival", NEAR, new Date(), same)).json()).toMatchObject({ ok: true, resent: true });
+  expect(await (await upload(worker, two, "arrival", NEAR, new Date(), same)).json()).toMatchObject({ review: "pending" });
+
+  await manager.goto("/m/review");
+  await expect(manager.getByText("Same photo sent before")).toBeVisible();
+  await expect(manager.getByText(/The same file as a photo from “Meter reading 1”/)).toBeVisible();
+  manager.once("dialog", (d) => d.accept()); // "Reject? Ravi Kumar will have to send a new arrival photo"
+  await manager.getByRole("button", { name: "Reject" }).click();
+  await expect(manager.getByText("Rejected. Ravi Kumar has to send a new arrival photo from the site.")).toBeVisible();
+  await worker.goto(`/w/jobs/${two}`);
+  await expect(worker.getByText("Your manager didn't accept your arrival photo. Send a new one from the site.")).toBeVisible();
+  await expect(worker.getByRole("button", { name: /take arrival photo/ })).toBeVisible();
+});
+
+test("rejecting a leaving photo opens the job for a new one", async () => {
+  const id = await createJob("Generator check", AT_SITE);
+  expect((await upload(worker, id, "arrival", NEAR)).status()).toBe(200);
+  // Sent for approval from 1 km away.
+  const leave = await upload(worker, id, "leave", FAR, new Date(), undefined, { request: "gps_wrong" });
+  expect(await leave.json()).toMatchObject({ review: "pending" });
+  await manager.goto(`/m/jobs/${id}`);
+  await expect(manager.getByText(/once you approve the photos waiting for review/)).toBeVisible();
+  await manager.getByLabel("Note for the worker").fill("That's the depot, not the site.");
+  await manager.getByRole("button", { name: "Reject" }).click();
+  await expect(manager.getByText(/^Rejected. The job is open again until Ravi Kumar sends a new leaving photo/)).toBeVisible();
+  await worker.goto(`/w/jobs/${id}`);
+  await expect(
+    worker.getByText("Your manager didn't accept your leaving photo. Send a new one from the site. Their note: “That's the depot, not the site.”"),
+  ).toBeVisible();
+  await expect(worker.getByRole("button", { name: /Take leaving photo/ })).toBeEnabled();
+  expect(await (await upload(worker, id, "leave", NEAR)).json()).toMatchObject({ review: "none" });
+});
+
+test("one phone sending check-ins for two people waits for review", async ({ browser }) => {
+  await manager.goto("/m/workers");
+  await manager.getByLabel("Name", { exact: true }).fill("Sara Ali");
+  await manager.getByLabel("Mobile number").fill("050 333 3333");
+  await manager.getByLabel("PIN", { exact: true }).fill("135790");
+  await manager.getByRole("button", { name: "Add worker" }).click();
+  await expect(manager.getByText("Sara Ali added. PIN: 135790")).toBeVisible();
+  const raviJob = await createJob("Pool pump", AT_SITE, { uncheck: ["Leaving photo"] });
+  const saraJob = await createJob("Pool filter", AT_SITE, { worker: "Sara Ali", uncheck: ["Leaving photo"] });
+
+  const phone = await browser.newContext({ ...devices["Pixel 7"], locale: "en-US", timezoneId: "Asia/Dubai" });
+  const page = await phone.newPage();
+  await logIn(page, "0502222222", "246810");
+  await expect(page).toHaveURL(/\/w$/);
+  expect(await (await upload(page, raviJob, "arrival", NEAR)).json()).toMatchObject({ review: "none" });
+  // Ravi hands his phone to Sara.
+  await page.getByRole("button", { name: "Log out" }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await logIn(page, "0503333333", "135790");
+  await page.getByRole("button", { name: "I understand" }).click();
+  expect(await (await upload(page, saraJob, "arrival", NEAR)).json()).toMatchObject({ review: "pending" });
+  await phone.close();
+
+  await manager.goto("/m/review");
+  await expect(manager.getByText("Phone used by someone else")).toBeVisible();
+  await expect(manager.getByText(/Sent from the phone that sent Ravi Kumar's photo/)).toBeVisible();
+  await manager.getByRole("button", { name: "Approve" }).click();
+  await expect(manager.getByText("Approved.")).toBeVisible();
+});
+
+test("workers can log in with fingerprint or face, and the company can require it", async ({ browser }) => {
+  const phone = await browser.newContext({ ...devices["Pixel 7"], locale: "en-US", timezoneId: "Asia/Dubai" });
+  const page = await phone.newPage();
+  // A phone with a fingerprint reader, which always recognises its owner.
+  const cdp = await phone.newCDPSession(page);
+  await cdp.send("WebAuthn.enable");
+  await cdp.send("WebAuthn.addVirtualAuthenticator", {
+    options: {
+      protocol: "ctap2",
+      transport: "internal",
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  });
+  await logIn(page, "0503333333", "135790");
+  await expect(page).toHaveURL(/\/w$/);
+  await page.getByRole("button", { name: "Set up fingerprint login" }).click();
+  await expect(page.getByText("Done. Next time, log in with your fingerprint or face.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Log out" }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await page.getByRole("button", { name: "Log in with fingerprint or face" }).click();
+  await expect(page).toHaveURL(/\/w$/);
+  await manager.goto("/m/workers");
+  await expect(manager.getByRole("link", { name: /Sara Ali/ }).getByText("Fingerprint")).toBeVisible();
+
+  // Sara's PIN also works on a friend's phone, for now.
+  const friend = await browser.newContext({ ...devices["Pixel 7"], locale: "en-US", timezoneId: "Asia/Dubai" });
+  const friendPage = await friend.newPage();
+  await logIn(friendPage, "0503333333", "135790");
+  await expect(friendPage).toHaveURL(/\/w$/);
+
+  // The company requires it: Sara's PIN no longer works, also where she's already logged in
+  // with it, but her fingerprint does.
+  await manager.goto("/m/settings");
+  await manager.getByRole("checkbox", { name: /Workers must log in with fingerprint or face/ }).check();
+  await manager.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(manager.getByText(/^Saved. Workers are asked to set up fingerprint or face login/)).toBeVisible();
+  await friendPage.goto("/w");
+  await expect(friendPage).toHaveURL(/\/login$/);
+  await friend.close();
+  await page.goto("/w");
+  await expect(page).toHaveURL(/\/w$/); // her own passkey login stays
+  await phone.clearCookies({ name: "sc_session" });
+  await logIn(page, "0503333333", "135790");
+  await expect(page.getByText(/Your company asks you to log in with your fingerprint or face/)).toBeVisible();
+  await page.getByRole("button", { name: "Log in with fingerprint or face" }).click();
+  await expect(page).toHaveURL(/\/w$/);
+
+  // Lost phone: a PIN reset removes her passkeys and turns her PIN back on.
+  await manager.goto("/m/workers");
+  await manager.getByRole("link", { name: /Sara Ali/ }).click();
+  await manager.getByLabel("New PIN").fill("864201");
+  await manager.getByRole("button", { name: "Reset PIN" }).click();
+  await expect(manager.getByText(/their fingerprint logins are removed/)).toBeVisible();
+  await page.goto("/w");
+  await expect(page).toHaveURL(/\/login$/);
+  await page.getByRole("button", { name: "Log in with fingerprint or face" }).click();
+  await expect(page.getByText(/isn't set up here any more/)).toBeVisible();
+  await logIn(page, "0503333333", "864201");
+  await expect(page).toHaveURL(/\/w$/);
+  await phone.close();
+
+  await manager.goto("/m/settings");
+  await manager.getByRole("checkbox", { name: /Workers must log in with fingerprint or face/ }).uncheck();
+  await manager.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(manager.getByText("Saved. Everyone can log in with their PIN again.")).toBeVisible();
+});
+
 const WRONG = "Wrong phone number or PIN. After 5 wrong tries, the number is locked for 15 minutes.";
 
 async function guessPins(page: Page, phone: string, times: number) {
   for (let i = 0; i < times; i++) {
     await page.getByLabel("Phone number").fill(phone);
     await page.getByLabel("PIN").fill("999999");
-    await page.getByRole("button", { name: "Log in" }).click();
-    await expect(page.getByRole("button", { name: "Log in" })).toBeEnabled();
+    await page.getByRole("button", { name: "Log in", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Log in", exact: true })).toBeEnabled();
   }
   await expect(page.getByText(WRONG)).toBeVisible();
 }
@@ -417,8 +706,8 @@ test("five wrong PINs lock the number, but not on its owner's own phone", async 
   await guessPins(page, "0502222222", 5);
   // Locked: the right PIN is refused too, with the same answer.
   await page.getByLabel("PIN").fill("246810");
-  await page.getByRole("button", { name: "Log in" }).click();
-  await expect(page.getByRole("button", { name: "Log in" })).toBeEnabled();
+  await page.getByRole("button", { name: "Log in", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Log in", exact: true })).toBeEnabled();
   await expect(page).toHaveURL(/\/login$/);
   await expect(page.getByText(WRONG)).toBeVisible();
   await ctx.close();
@@ -428,7 +717,7 @@ test("five wrong PINs lock the number, but not on its owner's own phone", async 
   await worker.goto("/login");
   await worker.getByLabel("Phone number").fill("0502222222");
   await worker.getByLabel("PIN").fill("246810");
-  await worker.getByRole("button", { name: "Log in" }).click();
+  await worker.getByRole("button", { name: "Log in", exact: true }).click();
   await expect(worker).toHaveURL(/\/w$/);
 });
 
@@ -457,6 +746,6 @@ test("a locked-out manager gets back in with the setup code", async ({ browser }
   await expect(manager).toHaveURL(/\/login$/);
   await manager.getByLabel("Phone number").fill("0501111111");
   await manager.getByLabel("PIN").fill("735184");
-  await manager.getByRole("button", { name: "Log in" }).click();
+  await manager.getByRole("button", { name: "Log in", exact: true }).click();
   await expect(manager).toHaveURL(/\/m$/);
 });

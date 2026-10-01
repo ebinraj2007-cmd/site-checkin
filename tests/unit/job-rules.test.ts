@@ -1,26 +1,76 @@
 import { describe, expect, it } from "vitest";
-import { isCurrentVisit, isLate, missingSteps, photoTimeProblem } from "@/lib/job-rules";
-import { jobMessage } from "@/lib/messages";
+import {
+  isCurrentVisit,
+  isLate,
+  isRequestReason,
+  isSkipReason,
+  isStrongFlag,
+  missingSteps,
+  photoCounts,
+  photoTimeProblem,
+  type StepsJob,
+} from "@/lib/job-rules";
+import { customerCodeMessage, jobMessage } from "@/lib/messages";
 
-const base = {
+const base: StepsJob = {
   require_work_photos: false,
   require_notes: false,
   notes: "",
   require_signature: false,
   signature_file: null,
+  require_customer_code: false,
+  code_confirmed_at: null,
 };
+const photo = (kind: "arrival" | "work" | "leave", review: "none" | "pending" | "approved" | "rejected" = "none") => ({ kind, review });
+const skip = (step: "signature" | "code", review: "pending" | "approved" | "rejected") => ({ step, review });
 
 describe("missingSteps", () => {
   it("is empty when nothing extra is required", () => {
     expect(missingSteps(base, [])).toEqual([]);
   });
   it("lists what's required and not done", () => {
-    const job = { ...base, require_work_photos: true, require_notes: true, require_signature: true };
-    expect(missingSteps(job, [{ kind: "arrival" }])).toEqual(["work photos", "notes", "customer signature"]);
-    expect(missingSteps({ ...job, notes: "done", signature_file: "x.png" }, [{ kind: "work" }])).toEqual([]);
+    const job = { ...base, require_work_photos: true, require_notes: true, require_signature: true, require_customer_code: true };
+    expect(missingSteps(job, [photo("arrival")])).toEqual(["work photos", "notes", "customer code", "customer signature"]);
+    expect(
+      missingSteps({ ...job, notes: "done", signature_file: "x.png", code_confirmed_at: new Date() }, [photo("work")]),
+    ).toEqual([]);
   });
   it("treats whitespace notes as missing", () => {
     expect(missingSteps({ ...base, require_notes: true, notes: "  \n" }, [])).toEqual(["notes"]);
+  });
+  it("counts a work photo waiting for review, but not a rejected one", () => {
+    const job = { ...base, require_work_photos: true };
+    expect(missingSteps(job, [photo("work", "pending")])).toEqual([]);
+    expect(missingSteps(job, [photo("work", "rejected")])).toEqual(["work photos"]);
+    expect(missingSteps(job, [photo("work", "rejected"), photo("work", "approved")])).toEqual([]);
+  });
+  it("accepts a customer step skipped with a reason, until the manager rejects the skip", () => {
+    const job = { ...base, require_signature: true };
+    expect(missingSteps(job, [], [skip("signature", "pending")])).toEqual([]);
+    expect(missingSteps(job, [], [skip("signature", "approved")])).toEqual([]);
+    expect(missingSteps(job, [], [skip("signature", "rejected")])).toEqual(["customer signature"]);
+    // Skipped again after a refusal: waiting for review again.
+    expect(missingSteps(job, [], [skip("signature", "rejected"), skip("signature", "pending")])).toEqual([]);
+    // Skipping one step doesn't excuse the other.
+    expect(missingSteps({ ...job, require_customer_code: true }, [], [skip("signature", "approved")])).toEqual(["customer code"]);
+  });
+});
+
+describe("reviews", () => {
+  it("counts a photo unless it waits for review or was rejected", () => {
+    expect(photoCounts({ review: "none" })).toBe(true);
+    expect(photoCounts({ review: "approved" })).toBe(true);
+    expect(photoCounts({ review: "pending" })).toBe(false);
+    expect(photoCounts({ review: "rejected" })).toBe(false);
+  });
+  it("knows its reasons and which warning signs need a review", () => {
+    expect(isRequestReason("pin_wrong")).toBe(true);
+    expect(isRequestReason("toString")).toBe(false);
+    expect(isRequestReason(undefined)).toBe(false);
+    expect(isSkipReason("customer_absent")).toBe(true);
+    expect(isSkipReason("__proto__")).toBe(false);
+    expect(isStrongFlag({ code: "duplicate_photo" })).toBe(true);
+    expect(isStrongFlag({ code: "ip_country" })).toBe(false);
   });
 });
 
@@ -90,5 +140,20 @@ describe("jobMessage", () => {
     expect(text).toContain("destination=25.2,55.27");
     expect(text).toContain("Customer: Ali, +971 50 000 0000");
     expect(text).toContain("https://checkin.example.com/w/jobs/abc");
+  });
+});
+
+describe("customerCodeMessage", () => {
+  it("gives the customer the code, the job and the visit time", () => {
+    const text = customerCodeMessage(
+      { title: "AC service", scheduled_at: new Date("2026-09-27T06:00:00Z"), customer_name: "Ali Hassan" },
+      "0472",
+      "Cool Air",
+      "Asia/Dubai",
+    );
+    expect(text).toContain("Hello Ali, this is Cool Air.");
+    expect(text).toContain("*AC service*");
+    expect(text).toMatch(/Sun 27 Sept?, 10:00 AM/);
+    expect(text).toContain("*0472*");
   });
 });

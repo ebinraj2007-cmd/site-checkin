@@ -32,6 +32,11 @@ export default async function WorkerPage(props: PageProps<"/m/workers/[id]">) {
                   ? `Job alerts on (${worker.devices} device${worker.devices === 1 ? "" : "s"})`
                   : "Job alerts off: send jobs on WhatsApp"}
               </Badge>
+              {worker.passkeys > 0 && (
+                <Badge tone="green">
+                  Fingerprint login on ({worker.passkeys} device{worker.passkeys === 1 ? "" : "s"})
+                </Badge>
+              )}
               {!worker.active && <Badge tone="gray">Inactive</Badge>}
             </span>
           }
@@ -45,7 +50,11 @@ export default async function WorkerPage(props: PageProps<"/m/workers/[id]">) {
       </Card>
       {worker.id !== me.id && (
         <Card>
-          <h2 className="mb-3 text-base font-bold">Forgot PIN / lost phone</h2>
+          <h2 className="mb-1 text-base font-bold">Forgot PIN / lost phone</h2>
+          <p className="mb-3 text-sm text-slate-600">
+            A new PIN logs {worker.name} out everywhere and removes their fingerprint logins, so a lost phone can&apos;t
+            be used.
+          </p>
           <ResetPinForm workerId={worker.id} />
         </Card>
       )}

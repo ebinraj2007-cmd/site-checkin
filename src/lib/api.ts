@@ -1,6 +1,7 @@
 import "server-only";
 import { NextResponse } from "next/server";
 import { getSessionUser, type SessionUser } from "./auth";
+import { NOTICE_VERSION } from "./notice";
 
 export function fail(status: number, error: string, extra: Record<string, unknown> = {}) {
   return NextResponse.json({ error, ...extra }, { status });
@@ -10,11 +11,27 @@ export function fail(status: number, error: string, extra: Record<string, unknow
 // back on failure. Mutations must come from this site (session cookies are SameSite=Lax;
 // this is the second lock).
 export async function apiUser(req: Request, opts: { manager?: boolean } = {}): Promise<SessionUser | Response> {
-  if (req.method !== "GET" && !sameOrigin(req)) return fail(403, "Request blocked.");
+  const blocked = crossSite(req);
+  if (blocked) return blocked;
   const user = await getSessionUser();
   if (!user) return fail(401, "Your login has expired. Log in again.");
   if (opts.manager && user.role !== "manager") return fail(403, "Only managers can do that.");
   return user;
+}
+
+// apiUser for the worker's check-in routes: they also need the person to have read what
+// the app records (the notice in /w).
+export async function apiWorker(req: Request): Promise<SessionUser | Response> {
+  const user = await apiUser(req);
+  if (user instanceof Response) return user;
+  if (user.notice_version < NOTICE_VERSION) return fail(403, "Open the app and read what it records first.");
+  return user;
+}
+
+// For route handlers that don't need a login (e.g. logging in): refuses cross-site
+// mutations. Returns the Response to send back, or null.
+export function crossSite(req: Request): Response | null {
+  return req.method !== "GET" && !sameOrigin(req) ? fail(403, "Request blocked.") : null;
 }
 
 function sameOrigin(req: Request): boolean {

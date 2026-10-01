@@ -5,7 +5,7 @@ import { JobSteps } from "@/components/JobSteps";
 import { Card, LinkButton, StatusBadge } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { directionsLink } from "@/lib/geo";
-import { getJob, getJobPhotos, isCurrentVisit, isLate } from "@/lib/jobs";
+import { CODE_MAX_ATTEMPTS, getJob, getJobPhotos, getJobSkips, isCurrentVisit, isLate } from "@/lib/jobs";
 import { displayPhone, telLink } from "@/lib/phone";
 import { getSettings } from "@/lib/settings";
 import { formatDateTime } from "@/lib/time";
@@ -17,8 +17,19 @@ export default async function WorkerJobPage(props: PageProps<"/w/jobs/[id]">) {
   const { id } = await props.params;
   const job = await getJob(id);
   if (!job || job.assigned_to !== me.id) notFound();
-  const [photos, { timezone: tz }] = await Promise.all([getJobPhotos(job.id), getSettings()]);
+  const [photos, skips, { timezone: tz }] = await Promise.all([getJobPhotos(job.id), getJobSkips(job.id), getSettings()]);
   const now = new Date();
+  // The manager rejected the arrival photo (the worker checks in again), or the leaving
+  // photo (the job is open again for a new one).
+  const lastArrival = photos.findLast((p) => p.kind === "arrival");
+  const lastLeave = photos.findLast((p) => p.kind === "leave" && isCurrentVisit(job, p));
+  const why = (note: string) => (note ? ` Their note: “${note}”` : "");
+  const rejected =
+    job.status === "assigned" && lastArrival?.review === "rejected"
+      ? `Your manager didn't accept your arrival photo. Send a new one from the site.${why(lastArrival.review_note)}`
+      : job.status === "arrived" && lastLeave?.review === "rejected"
+        ? `Your manager didn't accept your leaving photo. Send a new one from the site.${why(lastLeave.review_note)}`
+        : null;
 
   return (
     <div className="space-y-3">
@@ -67,6 +78,10 @@ export default async function WorkerJobPage(props: PageProps<"/w/jobs/[id]">) {
       <JobSteps
         workerName={me.name}
         timezone={tz}
+        alert={rejected}
+        skips={skips
+          .filter((s) => isCurrentVisit(job, s))
+          .map((s) => ({ id: s.id, step: s.step, reason: s.reason, note: s.note, review: s.review, reviewNote: s.review_note }))}
         job={{
           id: job.id,
           title: job.title,
@@ -77,6 +92,11 @@ export default async function WorkerJobPage(props: PageProps<"/w/jobs/[id]">) {
           requireNotes: job.require_notes,
           requireSignature: job.require_signature,
           requireLeavePhoto: job.require_leave_photo,
+          requireSelfie: job.require_selfie,
+          // Whether a code is needed and accepted; the code itself stays on the server.
+          requireCustomerCode: job.require_customer_code && !!job.customer_code,
+          codeConfirmed: !!job.code_confirmed_at,
+          codeTriesLeft: Math.max(0, CODE_MAX_ATTEMPTS - job.code_attempts),
           notes: job.notes,
           signatureName: job.signature_name,
           signatureUrl: job.signature_file ? `/api/files/${job.signature_file}` : null,
@@ -93,6 +113,9 @@ export default async function WorkerJobPage(props: PageProps<"/w/jobs/[id]">) {
             timeText: formatDateTime(p.created_at, tz, now),
             distance: p.distance_m,
             onSite: p.on_site,
+            review: p.review,
+            requestReason: p.request_reason,
+            reviewNote: p.review_note,
           }))}
       />
     </div>

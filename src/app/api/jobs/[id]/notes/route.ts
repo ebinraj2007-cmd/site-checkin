@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { apiUser, fail, readBody } from "@/lib/api";
+import { apiWorker, fail, readBody } from "@/lib/api";
 import { query } from "@/lib/db";
 import { getJob } from "@/lib/jobs";
 
 export async function POST(req: Request, ctx: RouteContext<"/api/jobs/[id]/notes">) {
-  const user = await apiUser(req);
+  const user = await apiWorker(req);
   if (user instanceof Response) return user;
   const job = await getJob((await ctx.params).id);
   if (!job || job.assigned_to !== user.id) return fail(404, "This job isn't assigned to you.");

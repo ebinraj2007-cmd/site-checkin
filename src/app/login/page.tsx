@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { getSessionUser, hasAnyUser } from "@/lib/auth";
 import { getSettings } from "@/lib/settings";
+import { PasskeyLogin } from "@/components/PasskeyLogin";
 import { LoginForm } from "./LoginForm";
 
 export const metadata: Metadata = { title: "Log in" };
@@ -22,7 +23,10 @@ export default async function LoginPage() {
         <h1 className="text-2xl font-bold tracking-tight">{companyName}</h1>
         <p className="mt-1 text-sm text-slate-500">Log in with your phone number and PIN</p>
       </div>
-      <LoginForm />
+      <div className="space-y-3">
+        <PasskeyLogin />
+        <LoginForm />
+      </div>
       <p className="mt-6 text-center text-xs text-slate-500">
         Forgot your PIN? Ask your manager to reset it.
         <br />

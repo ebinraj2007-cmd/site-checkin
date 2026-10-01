@@ -50,3 +50,21 @@ export function inviteMessage(opts: {
     "Add it to your home screen and tap “Turn on job alerts” so new jobs reach you.",
   ].join("\n");
 }
+
+// Sent by the manager to the customer. The customer gives the code to the worker in person
+// when the work is done, which shows the worker was really there; the worker never sees it.
+export function customerCodeMessage(
+  job: { title: string; scheduled_at: Date | null; customer_name: string },
+  code: string,
+  company: string,
+  tz: string,
+): string {
+  return [
+    `Hello${job.customer_name ? ` ${job.customer_name.split(" ")[0]}` : ""}, this is ${company}.`,
+    "",
+    `Our technician is coming for: *${job.title}*${job.scheduled_at ? ` (${formatWhen(job.scheduled_at, tz)})` : ""}.`,
+    `When the work is done, please give them this code: *${code}*`,
+    "",
+    "It confirms they were with you. Only give it to them in person.",
+  ].join("\n");
+}

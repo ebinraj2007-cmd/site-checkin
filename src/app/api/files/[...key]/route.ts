@@ -2,9 +2,9 @@ import { apiUser, fail } from "@/lib/api";
 import { getJob } from "@/lib/jobs";
 import { fileResponse } from "@/lib/storage";
 
-const KEY = /^(photos|signatures)\/([0-9a-f-]{36})\/[0-9a-f-]{36}\.(jpg|png|webp)$/;
+const KEY = /^(photos|signatures)\/([0-9a-f-]{36})\/[0-9a-f-]{36}(-selfie)?\.(jpg|png|webp)$/;
 
-// Photos and signatures, only for managers and the worker the job belongs to.
+// Photos, selfies and signatures, only for managers and the worker the job belongs to.
 export async function GET(req: Request, ctx: RouteContext<"/api/files/[...key]">) {
   const user = await apiUser(req);
   if (user instanceof Response) return user;

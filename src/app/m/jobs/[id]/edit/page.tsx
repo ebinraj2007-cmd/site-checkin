@@ -50,6 +50,8 @@ export default async function EditJobPage(props: PageProps<"/m/jobs/[id]/edit">)
           requireWorkPhotos: job.require_work_photos,
           requireNotes: job.require_notes,
           requireSignature: job.require_signature,
+          requireSelfie: job.require_selfie,
+          requireCustomerCode: job.require_customer_code,
         }}
       />
     </div>

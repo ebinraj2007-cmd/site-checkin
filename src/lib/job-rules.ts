@@ -2,6 +2,8 @@
 
 export type JobStatus = "assigned" | "arrived" | "completed" | "cancelled";
 export type PhotoKind = "arrival" | "work" | "leave";
+// A manager's review of a photo or of skipped steps. "none": nothing to review.
+export type ReviewState = "none" | "pending" | "approved" | "rejected";
 
 export type Job = {
   id: string;
@@ -21,6 +23,13 @@ export type Job = {
   require_work_photos: boolean;
   require_notes: boolean;
   require_signature: boolean;
+  require_selfie: boolean;
+  require_customer_code: boolean;
+  // Never sent to the worker's phone: the customer gives it to them at the site.
+  customer_code: string | null;
+  code_confirmed_at: Date | null;
+  code_attempts: number;
+  pin_from_photo: boolean; // the manager moved the pin to where a check-in photo was taken
   status: JobStatus;
   arrived_at: Date | null;
   left_at: Date | null;
@@ -29,6 +38,7 @@ export type Job = {
   signature_name: string;
   signature_file: string | null;
   signed_at: Date | null;
+  created_by: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -47,8 +57,98 @@ export type JobPhoto = {
   live_camera: boolean;
   device_time: Date | null;
   created_at: Date;
+  altitude_m: number | null;
+  altitude_accuracy_m: number | null;
+  heading_deg: number | null;
+  speed_mps: number | null;
+  fix_time: Date | null;
+  sha256: string | null;
+  selfie_key: string | null;
+  browser_id: string | null;
+  ip_country: string | null;
+  flags: Flag[];
+  review: ReviewState;
+  request_reason: RequestReason | null;
+  request_note: string;
+  reviewed_by: string | null;
+  reviewed_at: Date | null;
+  review_note: string;
   user_name?: string | null;
+  reviewer_name?: string | null;
 };
+
+// Why a worker sends an arrival or leaving photo for approval instead of checking in.
+export const REQUEST_REASONS = {
+  gps_wrong: "My phone shows the wrong location",
+  pin_wrong: "The job pin is in the wrong place",
+  site_bigger: "The site is bigger than the circle",
+  no_gps: "No GPS signal here (indoors, basement)",
+  other: "Something else",
+} as const;
+export type RequestReason = keyof typeof REQUEST_REASONS;
+export const isRequestReason = (v: unknown): v is RequestReason => typeof v === "string" && hasKey(REQUEST_REASONS, v);
+
+// Steps a worker can skip with a reason when the customer can't do them. The manager
+// reviews the skip.
+export type SkipStep = "signature" | "code";
+export const SKIP_STEP_LABEL: Record<SkipStep, string> = { signature: "customer signature", code: "customer code" };
+export const SKIP_REASONS = {
+  customer_absent: "The customer isn't here",
+  customer_refused: "The customer won't do it",
+  no_code: "The customer doesn't have the code",
+  other: "Something else",
+} as const;
+export type SkipReason = keyof typeof SKIP_REASONS;
+export const isSkipReason = (v: unknown): v is SkipReason => typeof v === "string" && hasKey(SKIP_REASONS, v);
+export type JobSkip = {
+  id: string;
+  job_id: string;
+  user_id: string | null;
+  step: SkipStep;
+  reason: SkipReason;
+  note: string;
+  created_at: Date;
+  review: Exclude<ReviewState, "none">;
+  reviewed_by: string | null;
+  reviewed_at: Date | null;
+  review_note: string;
+  user_name?: string | null;
+  reviewer_name?: string | null;
+};
+
+// Warning signs the server looks for in each photo (see fraud.ts). Strong ones send the
+// photo to the manager's review; the rest are shown on the photo for them to weigh.
+export const FLAGS = {
+  duplicate_photo: { label: "Same photo sent before", strong: true },
+  similar_photo: { label: "Looks like an earlier photo", strong: true },
+  blank_photo: { label: "Photo is dark or blank", strong: true },
+  at_pin: { label: "GPS exactly on the job pin", strong: true },
+  impossible_travel: { label: "Too far from the last check-in", strong: true },
+  shared_phone: { label: "Phone used by someone else", strong: true },
+  same_point: { label: "Same GPS point as before", strong: false },
+  moving_fast: { label: "Moving fast", strong: false },
+  perfect_accuracy: { label: "GPS unusually precise", strong: false },
+  stale_fix: { label: "Old GPS reading", strong: false },
+  ip_country: { label: "Internet from another country", strong: false },
+} as const;
+export type FlagCode = keyof typeof FLAGS;
+// `jobId`: the other job involved, if any (e.g. where the same photo was sent before).
+export type Flag = { code: FlagCode; detail: string; jobId?: string };
+export const isStrongFlag = (flag: Pick<Flag, "code">) => FLAGS[flag.code]?.strong ?? false;
+
+// A photo counts (for check-in times and required steps) unless it waits for review or
+// was rejected. Photos from before reviews existed have review "none".
+export function photoCounts(photo: Pick<JobPhoto, "review">): boolean {
+  return photo.review === "none" || photo.review === "approved";
+}
+
+// Wrong customer codes allowed per visit before the worker must skip the step instead.
+export const CODE_MAX_ATTEMPTS = 5;
+
+// A step skipped in this visit and not refused by the manager (yet).
+export function isSkipped(skips: Pick<JobSkip, "step" | "review">[], step: SkipStep): boolean {
+  return skips.some((s) => s.step === step && s.review !== "rejected");
+}
 
 export const LATE_AFTER_MINUTES = 15;
 
@@ -80,19 +180,41 @@ export function isCurrentVisit(job: Pick<Job, "arrived_at">, photo: Pick<JobPhot
   return !!job.arrived_at && photo.created_at.getTime() >= job.arrived_at.getTime();
 }
 
+function hasKey(obj: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isUuid = (s: string) => UUID.test(s);
 
-// Steps still needed before the job can be finished, given the current visit's photos
-// (the leaving photo is the finishing step itself, so it is not listed here).
+export type StepsJob = Pick<
+  Job,
+  | "require_work_photos"
+  | "require_notes"
+  | "notes"
+  | "require_signature"
+  | "signature_file"
+  | "require_customer_code"
+  | "code_confirmed_at"
+>;
+
+// Steps still needed before the job can be finished, given the current visit's photos and
+// skips (the leaving photo is the finishing step itself, so it is not listed here). A work
+// photo waiting for review counts for now, so a wrongly flagged photo never blocks the
+// worker; a rejected one doesn't. A customer step skipped with a reason counts unless the
+// manager rejected the skip.
 export function missingSteps(
-  job: Pick<Job, "require_work_photos" | "require_notes" | "notes" | "require_signature" | "signature_file">,
-  photos: Pick<JobPhoto, "kind">[],
+  job: StepsJob,
+  photos: Pick<JobPhoto, "kind" | "review">[],
+  skips: Pick<JobSkip, "step" | "review">[] = [],
 ): string[] {
   const missing: string[] = [];
-  if (job.require_work_photos && !photos.some((p) => p.kind === "work")) missing.push("work photos");
+  if (job.require_work_photos && !photos.some((p) => p.kind === "work" && p.review !== "rejected")) {
+    missing.push("work photos");
+  }
   if (job.require_notes && !job.notes.trim()) missing.push("notes");
-  if (job.require_signature && !job.signature_file) missing.push("customer signature");
+  if (job.require_customer_code && !job.code_confirmed_at && !isSkipped(skips, "code")) missing.push("customer code");
+  if (job.require_signature && !job.signature_file && !isSkipped(skips, "signature")) missing.push("customer signature");
   return missing;
 }
 

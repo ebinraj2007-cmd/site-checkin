@@ -1,7 +1,8 @@
 import "server-only";
+import { randomInt } from "node:crypto";
 import { query, queryOne } from "./db";
 import { distanceMeters } from "./geo";
-import { isUuid, type Job, type JobPhoto } from "./job-rules";
+import { isUuid, type Job, type JobPhoto, type JobSkip, type ReviewState } from "./job-rules";
 
 export * from "./job-rules";
 
@@ -16,11 +17,34 @@ export async function getJob(id: string): Promise<Job | null> {
 
 export async function getJobPhotos(jobId: string): Promise<JobPhoto[]> {
   return query<JobPhoto>(
-    `SELECT p.*, u.name AS user_name
-       FROM job_photos p LEFT JOIN users u ON u.id = p.user_id
+    `SELECT p.*, u.name AS user_name, r.name AS reviewer_name
+       FROM job_photos p LEFT JOIN users u ON u.id = p.user_id LEFT JOIN users r ON r.id = p.reviewed_by
       WHERE p.job_id = $1 ORDER BY p.created_at`,
     [jobId],
   );
+}
+
+// Customer steps skipped on this job, oldest first (a visit's are the ones made since its
+// arrival photo, like its photos).
+export async function getJobSkips(jobId: string): Promise<JobSkip[]> {
+  return query<JobSkip>(
+    `SELECT s.*, u.name AS user_name, r.name AS reviewer_name
+       FROM job_skips s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN users r ON r.id = s.reviewed_by
+      WHERE s.job_id = $1 ORDER BY s.created_at`,
+    [jobId],
+  );
+}
+
+// The code the customer gives the worker at the site (see customerCodeMessage).
+export const newCustomerCode = () => String(randomInt(0, 10_000)).padStart(4, "0");
+
+// SET clause that starts a new visit (a reopened job, or an arrival photo the manager
+// rejected): a new arrival photo is needed, and a new customer code (`codeParam` is the
+// query parameter holding one from newCustomerCode), so a code given on an earlier visit
+// proves nothing. Photos and skips stay on record.
+export function newVisit(codeParam: string): string {
+  return `arrived_at = NULL, left_at = NULL, completed_at = NULL, code_confirmed_at = NULL, code_attempts = 0,
+    customer_code = CASE WHEN require_customer_code THEN ${codeParam}::text ELSE customer_code END`;
 }
 
 export type JobFilter = {
@@ -77,6 +101,7 @@ export type Checkin = {
   created_at: Date;
   distance_m: number | null;
   file_key: string;
+  review: ReviewState;
   job_id: string;
   title: string;
   worker_name: string | null;
@@ -84,7 +109,8 @@ export type Checkin = {
 
 export async function recentCheckins(limit = 8): Promise<Checkin[]> {
   return query<Checkin>(
-    `SELECT p.id, p.kind, p.created_at, p.distance_m, p.file_key, j.id AS job_id, j.title, u.name AS worker_name
+    `SELECT p.id, p.kind, p.created_at, p.distance_m, p.file_key, p.review, j.id AS job_id, j.title,
+            u.name AS worker_name
        FROM job_photos p
        JOIN jobs j ON j.id = p.job_id
        LEFT JOIN users u ON u.id = p.user_id

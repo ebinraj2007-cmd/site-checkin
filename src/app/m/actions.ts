@@ -16,11 +16,12 @@ import {
 } from "@/lib/auth";
 import { query, queryOne } from "@/lib/db";
 import { isValidLatLng } from "@/lib/geo";
-import { getJob, type Job } from "@/lib/jobs";
+import { getJob, isUuid, newCustomerCode, newVisit, type Job } from "@/lib/jobs";
 import { inviteMessage } from "@/lib/messages";
 import { normalizePhone, whatsappLink } from "@/lib/phone";
+import { removePasskeys } from "@/lib/passkeys";
 import { deleteAllSubscriptions, notifyUsers } from "@/lib/push";
-import { getSettings, saveSettings, validTimezone } from "@/lib/settings";
+import { getSettings, saveSettings, setPasskeysRequired, validTimezone } from "@/lib/settings";
 import { formatWhen, localInputToDate } from "@/lib/time";
 
 export type FormState = {
@@ -50,7 +51,10 @@ type JobInput = {
   requireWorkPhotos: boolean;
   requireNotes: boolean;
   requireSignature: boolean;
+  requireSelfie: boolean;
+  requireCustomerCode: boolean;
 };
+
 
 // `currentWorker` stays allowed when editing, even if they have since been deactivated.
 async function readJobForm(form: FormData, currentWorker: string | null = null): Promise<JobInput | { error: string }> {
@@ -93,6 +97,8 @@ async function readJobForm(form: FormData, currentWorker: string | null = null):
     requireWorkPhotos: form.get("require_work_photos") === "on",
     requireNotes: form.get("require_notes") === "on",
     requireSignature: form.get("require_signature") === "on",
+    requireSelfie: form.get("require_selfie") === "on",
+    requireCustomerCode: form.get("require_customer_code") === "on",
   };
 }
 
@@ -113,8 +119,9 @@ export async function createJob(_prev: FormState, form: FormData): Promise<FormS
   const [job] = await query<Job>(
     `INSERT INTO jobs (title, address, site_lat, site_lng, radius_m, scheduled_at, assigned_to,
                        customer_name, customer_phone, instructions, require_leave_photo,
-                       require_work_photos, require_notes, require_signature, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                       require_work_photos, require_notes, require_signature, created_by,
+                       require_selfie, require_customer_code, customer_code)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
      RETURNING *`,
     [
       input.title,
@@ -132,6 +139,9 @@ export async function createJob(_prev: FormState, form: FormData): Promise<FormS
       input.requireNotes,
       input.requireSignature,
       me.id,
+      input.requireSelfie,
+      input.requireCustomerCode,
+      input.requireCustomerCode ? newCustomerCode() : null,
     ],
   );
   const { timezone } = await getSettings();
@@ -156,7 +166,9 @@ export async function updateJob(jobId: string, _prev: FormState, form: FormData)
     `UPDATE jobs SET title = $2, address = $3, site_lat = $4, site_lng = $5, radius_m = $6,
             scheduled_at = $7, assigned_to = $8, customer_name = $9, customer_phone = $10,
             instructions = $11, require_leave_photo = $12, require_work_photos = $13,
-            require_notes = $14, require_signature = $15, updated_at = now()
+            require_notes = $14, require_signature = $15, require_selfie = $16,
+            require_customer_code = $17, customer_code = COALESCE(customer_code, $18),
+            pin_from_photo = pin_from_photo AND site_lat = $4 AND site_lng = $5, updated_at = now()
       WHERE id = $1 AND status IN ('assigned', 'arrived')
         AND (arrived_at IS NULL OR assigned_to IS NOT DISTINCT FROM $8::uuid)
       RETURNING *`,
@@ -176,6 +188,9 @@ export async function updateJob(jobId: string, _prev: FormState, form: FormData)
       input.requireWorkPhotos,
       input.requireNotes,
       input.requireSignature,
+      input.requireSelfie,
+      input.requireCustomerCode,
+      input.requireCustomerCode ? newCustomerCode() : null,
     ],
   );
   if (!job) {
@@ -225,14 +240,15 @@ export async function cancelJob(jobId: string) {
 
 // Cancelled or done → a new visit: the worker checks in again with a new arrival photo,
 // so time on site never stretches across the time the job was closed. Photos from the
-// earlier visit stay on record; notes and the signature carry over.
+// earlier visit stay on record; notes and the signature carry over. The job gets a new
+// customer code, which the manager sends to the customer again.
 export async function reopenJob(jobId: string) {
   await requireManager();
+  if (!isUuid(jobId)) return;
   const [job] = await query<Job>(
-    `UPDATE jobs
-        SET status = 'assigned', arrived_at = NULL, left_at = NULL, completed_at = NULL, updated_at = now()
+    `UPDATE jobs SET status = 'assigned', ${newVisit("$2")}, updated_at = now()
       WHERE id = $1 AND status IN ('cancelled', 'completed') RETURNING *`,
-    [jobId],
+    [jobId, newCustomerCode()],
   );
   if (job?.assigned_to) {
     const { timezone } = await getSettings();
@@ -303,7 +319,7 @@ export async function resetPin(userId: string, _prev: FormState, form: FormData)
     [userId, await hashPin(pin)],
   );
   if (!user) return { error: "Worker not found." };
-  await cutOff(userId); // a lost phone stays logged out and gets no more job alerts
+  await cutOff(userId); // a lost phone stays logged out, gets no more job alerts, and its passkey is gone
   const message = inviteMessage({
     name: user.name,
     company: settings.companyName,
@@ -313,7 +329,7 @@ export async function resetPin(userId: string, _prev: FormState, form: FormData)
   });
   return {
     ok: true,
-    message: `New PIN: ${pin}. ${user.name} is logged out everywhere until they use it.`,
+    message: `New PIN: ${pin}. ${user.name} is logged out everywhere until they use it, and their fingerprint logins are removed.`,
     pin,
     whatsappUrl: whatsappLink(user.phone, message),
   };
@@ -338,6 +354,20 @@ export async function saveSettingsAction(_prev: FormState, form: FormData): Prom
   return { ok: true, message: "Settings saved." };
 }
 
+// "Workers must log in with fingerprint or face".
+export async function saveSecurity(_prev: FormState, form: FormData): Promise<FormState> {
+  await requireManager();
+  const on = form.get("require_passkeys") === "on";
+  await setPasskeysRequired(on);
+  revalidatePath("/", "layout");
+  return {
+    ok: true,
+    message: on
+      ? "Saved. Workers are asked to set up fingerprint or face login; once they have, their PIN stops working."
+      : "Saved. Everyone can log in with their PIN again.",
+  };
+}
+
 export async function changeMyPin(_prev: FormState, form: FormData): Promise<FormState> {
   const me = await requireManager();
   const current = text(form, "current", 8);
@@ -348,17 +378,26 @@ export async function changeMyPin(_prev: FormState, form: FormData): Promise<For
   if (!isValidPin(pin)) return { error: "The new PIN must be 6 to 8 digits." };
   if (pin !== pin2) return { error: "The new PINs don't match." };
   await query("UPDATE users SET pin_hash = $2 WHERE id = $1", [me.id, await hashPin(pin)]);
-  // In case the old PIN went with a lost phone: only this browser stays logged in. It
-  // registers for alerts again by itself (ChangePinForm).
+  // In case the old PIN went with a lost phone: only this browser stays logged in, and the
+  // lost phone's passkey stops working. This browser registers for alerts again by itself
+  // (ChangePinForm).
   await endOtherSessions(me.id);
   await deleteAllSubscriptions(me.id);
   await forgetDevices(me.id, { keepThisOne: true });
-  return { ok: true, message: "PIN changed. You're logged out on every other device, and they no longer get alerts." };
+  await removePasskeys(me.id);
+  revalidatePath("/m/settings");
+  return {
+    ok: true,
+    message:
+      "PIN changed. You're logged out on every other device, they no longer get alerts, and your fingerprint logins are removed (set them up again below).",
+  };
 }
 
-// Logs someone out everywhere and stops alerts to their devices.
+// Logs someone out everywhere, stops alerts to their devices and removes their passkeys
+// (so their PIN works again).
 async function cutOff(userId: string) {
   await endAllSessions(userId);
   await deleteAllSubscriptions(userId);
   await forgetDevices(userId);
+  await removePasskeys(userId);
 }

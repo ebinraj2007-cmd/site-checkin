@@ -1,4 +1,4 @@
-import { parsePhoneNumberFromString } from "libphonenumber-js/max";
+import { getCountries, getCountryCallingCode, parsePhoneNumberFromString } from "libphonenumber-js/max";
 
 // Phone numbers are stored as international digits without "+", e.g. "971501234567".
 // That is the form WhatsApp's wa.me links and the login lookup both use.
@@ -25,4 +25,19 @@ export function whatsappLink(digits: string, text: string): string {
 
 export function telLink(digits: string): string {
   return `tel:+${digits}`;
+}
+
+// Countries that use a calling code: "971" → ["AE"], "44" → ["GB", "GG", "IM", "JE"].
+export function countriesForCallingCode(code: string): string[] {
+  const digits = code.replace(/\D/g, "");
+  return digits ? getCountries().filter((c) => getCountryCallingCode(c) === digits) : [];
+}
+
+// "AE" → "United Arab Emirates"
+export function countryName(code: string): string {
+  try {
+    return new Intl.DisplayNames(["en"], { type: "region" }).of(code) ?? code;
+  } catch {
+    return code;
+  }
 }

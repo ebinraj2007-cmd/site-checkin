@@ -4,17 +4,35 @@ import { notFound } from "next/navigation";
 import { ConfirmButton } from "@/components/ConfirmButton";
 import { JobMap, type MapPhoto } from "@/components/JobMap";
 import { PhotoTile } from "@/components/PhotoTile";
+import { ReviewForm } from "@/components/ReviewForm";
 import { Alert, Badge, buttonClass, Card, LinkButton, StatusBadge, WhatsAppIcon } from "@/components/ui";
 import { appUrl } from "@/lib/app-url";
 import { requireManager } from "@/lib/auth";
 import { directionsLink, formatDistance } from "@/lib/geo";
-import { getJob, getJobPhotos, isCurrentVisit, isLate, missingSteps, overlappingVisits } from "@/lib/jobs";
-import { jobMessage } from "@/lib/messages";
+import {
+  CODE_MAX_ATTEMPTS,
+  getJob,
+  getJobPhotos,
+  getJobSkips,
+  isCurrentVisit,
+  isLate,
+  isSkipped,
+  missingSteps,
+  overlappingVisits,
+  photoCounts,
+  SKIP_REASONS,
+  SKIP_STEP_LABEL,
+  type Job,
+  type JobPhoto,
+  type JobSkip,
+} from "@/lib/jobs";
+import { customerCodeMessage, jobMessage } from "@/lib/messages";
 import { displayPhone, telLink, whatsappLink } from "@/lib/phone";
 import { getSettings } from "@/lib/settings";
 import { formatDateTime, formatDuration, formatTime } from "@/lib/time";
 import { getUserRow } from "@/lib/users";
 import { cancelJob, reopenJob } from "../../actions";
+import { reviewPhoto, reviewSkip } from "../../review/actions";
 
 export const metadata: Metadata = { title: "Job" };
 
@@ -26,8 +44,9 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
   const search = await props.searchParams;
   const job = await getJob(id);
   if (!job) notFound();
-  const [photos, settings, worker, baseUrl, overlaps] = await Promise.all([
+  const [photos, allSkips, settings, worker, baseUrl, overlaps] = await Promise.all([
     getJobPhotos(job.id),
+    getJobSkips(job.id),
     getSettings(),
     job.assigned_to ? getUserRow(job.assigned_to) : null,
     appUrl(),
@@ -42,6 +61,7 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
   const arrival = visit.findLast((p) => p.kind === "arrival");
   const leave = visit.findLast((p) => p.kind === "leave");
   const work = visit.filter((p) => p.kind === "work");
+  const workToReview = work.filter((p) => p.review === "pending").length;
   const open = job.status === "assigned" || job.status === "arrived";
   const whatsapp = job.worker_phone
     ? whatsappLink(job.worker_phone, jobMessage(job, baseUrl, tz, job.worker_name))
@@ -54,7 +74,8 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
       kind: p.kind,
       label: `${KIND_LABEL[p.kind]} photo · ${formatDateTime(p.created_at, tz, now)}`,
     }));
-  const stillNeeded = job.status === "arrived" ? missingSteps(job, visit) : [];
+  const skips = allSkips.filter((s) => isCurrentVisit(job, s));
+  const stillNeeded = job.status === "arrived" ? missingSteps(job, visit, skips) : [];
 
   return (
     <div className="space-y-4">
@@ -80,7 +101,9 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
             <form action={reopenJob.bind(null, job.id)}>
               <ConfirmButton
                 variant="secondary"
-                confirm="Reopen this job? It starts again: the worker sends a new arrival photo from the site."
+                confirm={`Reopen this job? It starts again: the worker sends a new arrival photo from the site.${
+                  job.require_customer_code ? " The job gets a new customer code: send it to the customer again." : ""
+                }`}
               >
                 Reopen
               </ConfirmButton>
@@ -155,8 +178,10 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
             <Detail label="Must send">
               {[
                 "arrival photo",
+                job.require_selfie && "selfies",
                 job.require_work_photos && "work photos",
                 job.require_notes && "notes",
+                job.require_customer_code && "customer code",
                 job.require_signature && "customer signature",
                 job.require_leave_photo && "leaving photo",
               ]
@@ -165,6 +190,15 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
               <span className="text-slate-500">(check-in within {formatDistance(job.radius_m)})</span>
             </Detail>
           </Card>
+          {job.require_customer_code && job.customer_code && (
+            <CustomerCode
+              job={job}
+              code={job.customer_code}
+              skipped={isSkipped(skips, "code")}
+              company={settings.companyName}
+              tz={tz}
+            />
+          )}
           <JobMap site={{ lat: job.site_lat, lng: job.site_lng }} radius={job.radius_m} photos={mapPhotos} />
         </div>
 
@@ -181,7 +215,9 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
             )}
             {arrival && (
               <Step title="Arrived" time={arrival.created_at} tz={tz}>
-                <PhotoTile photo={arrival} tz={tz} radius={job.radius_m} />
+                <PhotoTile photo={arrival} tz={tz} radius={job.radius_m}>
+                  {arrival.review === "pending" && <PhotoReviewForm photo={arrival} job={job} />}
+                </PhotoTile>
               </Step>
             )}
             {work.length > 0 && (
@@ -191,6 +227,14 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
                     <PhotoTile key={p.id} photo={p} tz={tz} radius={job.radius_m} compact />
                   ))}
                 </div>
+                {workToReview > 0 && (
+                  <p className="text-sm text-amber-800">
+                    {workToReview === 1 ? "1 work photo waits" : `${workToReview} work photos wait`} for your review.{" "}
+                    <Link href="/m/review" className="font-semibold underline">
+                      Review →
+                    </Link>
+                  </p>
+                )}
               </Step>
             )}
             {job.notes && (
@@ -198,6 +242,7 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
                 <p className="whitespace-pre-wrap rounded-xl bg-slate-50 p-3 text-sm">{job.notes}</p>
               </Step>
             )}
+            {job.code_confirmed_at && <Step title="Customer gave the code" time={job.code_confirmed_at} tz={tz} />}
             {job.signature_file && (
               <Step title={`Signed by ${job.signature_name}`} time={job.signed_at} tz={tz}>
                 {/* eslint-disable-next-line @next/next/no-img-element -- private, auth-checked image */}
@@ -208,9 +253,14 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
                 />
               </Step>
             )}
+            {skips.map((skip) => (
+              <SkippedStep key={skip.id} skip={skip} tz={tz} />
+            ))}
             {leave && (
               <Step title="Left the site" time={leave.created_at} tz={tz}>
-                <PhotoTile photo={leave} tz={tz} radius={job.radius_m} />
+                <PhotoTile photo={leave} tz={tz} radius={job.radius_m}>
+                  {leave.review === "pending" && <PhotoReviewForm photo={leave} job={job} />}
+                </PhotoTile>
               </Step>
             )}
             {job.status === "completed" && !leave && job.completed_at && (
@@ -223,12 +273,7 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
                 far.
               </p>
             )}
-            {job.arrived_at && job.left_at && (
-              <p className="text-sm text-slate-600">
-                Time on site: <span className="font-semibold">{formatDuration(job.left_at.getTime() - job.arrived_at.getTime())}</span>{" "}
-                <span className="text-slate-500">(arrival photo to leaving photo)</span>
-              </p>
-            )}
+            {job.arrived_at && job.left_at && <TimeOnSite job={job} arrival={arrival} leave={leave} />}
             {job.status === "completed" && job.arrived_at && !job.left_at && (
               <p className="text-sm text-slate-500">
                 No time on site: this job didn&apos;t need a leaving photo, and Finish can be tapped from anywhere.
@@ -253,10 +298,14 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
           {earlier.length > 0 && (
             <Card className="space-y-3">
               <h2 className="text-base font-bold">Earlier visits</h2>
-              <p className="text-sm text-slate-500">Sent before the job was reopened. They don&apos;t count towards this visit.</p>
+              <p className="text-sm text-slate-500">
+                Sent before the job was reopened or the arrival was rejected. They don&apos;t count towards this visit.
+              </p>
               <div className="grid gap-3 sm:grid-cols-2">
                 {earlier.map((p) => (
-                  <PhotoTile key={p.id} photo={p} tz={tz} radius={job.radius_m} label={`${KIND_LABEL[p.kind]} photo`} />
+                  <PhotoTile key={p.id} photo={p} tz={tz} radius={job.radius_m} label={`${KIND_LABEL[p.kind]} photo`}>
+                    {p.review === "pending" && <PhotoReviewForm photo={p} job={job} />}
+                  </PhotoTile>
                 ))}
               </div>
             </Card>
@@ -264,6 +313,115 @@ export default async function ManagerJobPage(props: PageProps<"/m/jobs/[id]">) {
         </div>
       </div>
     </div>
+  );
+}
+
+function PhotoReviewForm({ photo, job }: { photo: JobPhoto; job: Job }) {
+  const located = photo.lat !== null && photo.lng !== null;
+  const ongoing = photo.kind === "arrival" && job.status === "arrived" && isCurrentVisit(job, photo);
+  return (
+    <ReviewForm
+      action={reviewPhoto.bind(null, photo.id)}
+      movePin={photo.kind !== "work" && located ? { checked: photo.request_reason === "pin_wrong" } : undefined}
+      rejectWarning={
+        ongoing ? `Reject? ${job.worker_name ?? "The worker"} will have to send a new arrival photo from the site.` : undefined
+      }
+    />
+  );
+}
+
+// Arrival photo to leaving photo, counted only once both photos are accepted.
+function TimeOnSite({ job, arrival, leave }: { job: Job; arrival?: JobPhoto; leave?: JobPhoto }) {
+  const time = formatDuration(job.left_at!.getTime() - job.arrived_at!.getTime());
+  const photos = [arrival, leave].filter((p): p is JobPhoto => !!p);
+  if (photos.some((p) => p.review === "rejected")) {
+    return (
+      <p className="text-sm text-red-700">
+        Time on site isn&apos;t counted: {photos.find((p) => p.review === "rejected")!.kind === "arrival" ? "the arrival" : "the leaving"}{" "}
+        photo was rejected.
+      </p>
+    );
+  }
+  if (photos.some((p) => !photoCounts(p))) {
+    return (
+      <p className="text-sm text-amber-800">
+        Time on site: <span className="font-semibold">{time}</span> once you approve the photos waiting for review.
+      </p>
+    );
+  }
+  return (
+    <p className="text-sm text-slate-600">
+      Time on site: <span className="font-semibold">{time}</span>{" "}
+      <span className="text-slate-500">(arrival photo to leaving photo)</span>
+    </p>
+  );
+}
+
+// A customer step the worker skipped this visit, with its review.
+function SkippedStep({ skip, tz }: { skip: JobSkip; tz: string }) {
+  return (
+    <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+      <p>
+        <span className="font-semibold">Skipped the {SKIP_STEP_LABEL[skip.step]}:</span> {SKIP_REASONS[skip.reason] ?? skip.reason}
+        {skip.note && <span className="italic"> “{skip.note}”</span>}
+        <span className="text-xs text-amber-800"> · {formatDateTime(skip.created_at, tz)}</span>
+      </p>
+      {skip.review === "pending" && <ReviewForm action={reviewSkip.bind(null, skip.id)} />}
+      {skip.review === "approved" && <Badge tone="green">Approved{skip.reviewer_name ? ` by ${skip.reviewer_name}` : ""}</Badge>}
+      {skip.review === "rejected" && <Badge tone="red">Rejected{skip.reviewer_name ? ` by ${skip.reviewer_name}` : ""}</Badge>}
+      {skip.review_note && <p className="text-xs">Manager&apos;s note: {skip.review_note}</p>}
+    </div>
+  );
+}
+
+function CustomerCode({
+  job,
+  code,
+  skipped,
+  company,
+  tz,
+}: {
+  job: Job;
+  code: string;
+  skipped: boolean;
+  company: string;
+  tz: string;
+}) {
+  const message = customerCodeMessage(job, code, company, tz);
+  const status = job.code_confirmed_at ? (
+    <Badge tone="green">Given by the customer · {formatDateTime(job.code_confirmed_at, tz)}</Badge>
+  ) : skipped ? (
+    <Badge tone="amber">Skipped by the worker</Badge>
+  ) : job.code_attempts >= CODE_MAX_ATTEMPTS ? (
+    <Badge tone="red">{job.code_attempts} wrong codes tried: locked</Badge>
+  ) : job.code_attempts > 0 ? (
+    <Badge tone="amber">
+      {job.code_attempts} wrong code{job.code_attempts === 1 ? "" : "s"} tried
+    </Badge>
+  ) : (
+    <Badge tone="slate">Not given yet</Badge>
+  );
+  return (
+    <Card className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-base font-bold">Customer code</h2>
+        {status}
+      </div>
+      <p className="font-mono text-3xl font-bold tracking-[0.4em] text-slate-900" aria-label="Customer code">
+        {code}
+      </p>
+      <p className="text-sm text-slate-600">
+        Send it to the customer, not the worker. The customer gives it to the worker when the job is done, which shows the
+        worker was really there.
+      </p>
+      {job.customer_phone ? (
+        <LinkButton href={whatsappLink(job.customer_phone, message)} external variant="whatsapp">
+          <WhatsAppIcon /> Send code to customer on WhatsApp
+        </LinkButton>
+      ) : (
+        <p className="text-sm text-amber-800">Add the customer&apos;s phone number to send it on WhatsApp.</p>
+      )}
+    </Card>
   );
 }
 

@@ -64,3 +64,15 @@ export function validTimezone(tz: string | null | undefined): string | null {
     return null;
   }
 }
+
+// "Workers must log in with fingerprint or face": once a worker has a passkey, their PIN
+// stops working (see passkeys.ts). getSessionUser in auth.ts reads this key in SQL too.
+const REQUIRE_PASSKEYS = "require_passkeys";
+
+export async function passkeysRequired(): Promise<boolean> {
+  return (await getSetting(REQUIRE_PASSKEYS)) === "1";
+}
+
+export async function setPasskeysRequired(on: boolean) {
+  await setSetting(REQUIRE_PASSKEYS, on ? "1" : "0");
+}

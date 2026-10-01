@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { JobRow } from "@/components/JobRow";
-import { Card, Empty, LinkButton, PageTitle } from "@/components/ui";
+import { Alert, Badge, Card, Empty, LinkButton, PageTitle } from "@/components/ui";
 import { requireManager } from "@/lib/auth";
 import { formatDistance } from "@/lib/geo";
 import { countCompletedBetween, isLate, listJobs, recentCheckins } from "@/lib/jobs";
+import { reviewCount } from "@/lib/review";
 import { getSettings } from "@/lib/settings";
 import { dayRange, formatDateTime, formatLongDate } from "@/lib/time";
 import { listUsers } from "@/lib/users";
@@ -16,11 +17,12 @@ export default async function Dashboard() {
   const { timezone } = await getSettings();
   const now = new Date();
   const [start, end] = dayRange(timezone, now);
-  const [open, doneToday, checkins, users] = await Promise.all([
+  const [open, doneToday, checkins, users, toReview] = await Promise.all([
     listJobs({ view: "open", limit: 500 }),
     countCompletedBetween(start, end),
     recentCheckins(8),
     listUsers(),
+    reviewCount(),
   ]);
 
   const late = open.filter((j) => isLate(j, now));
@@ -35,6 +37,15 @@ export default async function Dashboard() {
       <PageTitle title="Today" subtitle={formatLongDate(now, timezone)} />
 
       {firstRun && <GettingStarted hasWorkers={workers.length > 0} />}
+
+      {toReview > 0 && (
+        <Alert tone="amber">
+          <Link href="/m/review" className="font-semibold underline">
+            {toReview === 1 ? "1 check-in needs" : `${toReview} check-ins need`} your review →
+          </Link>{" "}
+          Sent for approval, or with warning signs. They don&apos;t count until you approve them.
+        </Alert>
+      )}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Late" value={late.length} tone={late.length ? "red" : "slate"} />
@@ -77,6 +88,16 @@ export default async function Dashboard() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-semibold">
                     {c.worker_name ?? "Someone"} {c.kind === "arrival" ? "arrived" : "left"}
+                    {c.review === "pending" && (
+                      <span className="ml-1.5 align-middle">
+                        <Badge tone="amber">Needs review</Badge>
+                      </span>
+                    )}
+                    {c.review === "rejected" && (
+                      <span className="ml-1.5 align-middle">
+                        <Badge tone="red">Rejected</Badge>
+                      </span>
+                    )}
                   </p>
                   <p className="truncate text-xs text-slate-500">
                     {c.title}

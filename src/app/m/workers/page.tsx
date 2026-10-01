@@ -35,6 +35,7 @@ export default async function WorkersPage() {
             </div>
             <div className="flex flex-col items-end gap-1">
               {u.role === "manager" && <Badge tone="blue">Manager</Badge>}
+              {u.active && u.passkeys > 0 && <Badge tone="green">Fingerprint</Badge>}
               {!u.active ? (
                 <Badge tone="gray">Inactive</Badge>
               ) : (

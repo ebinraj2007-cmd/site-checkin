@@ -31,8 +31,21 @@ deploy steps.
 - Arrival and leaving photos only count when fresh (`photoTimeProblem` in
   `src/lib/job-rules.ts`); the server's clock is what goes on record. Time on site is
   arrival photo to leaving photo (`left_at`), never the Finish button.
-- A reopened job is a new visit: code that looks at a job's photos keeps the current
-  visit's with `isCurrentVisit`.
+- A reopened job is a new visit: code that looks at a job's photos or skipped steps keeps
+  the current visit's with `isCurrentVisit`. Starting a new visit (reopen, a rejected
+  arrival) uses `newVisit()` from `src/lib/jobs.ts`, which also gives the job a new
+  customer code.
+- Photos sent for approval or with strong warning signs (`src/lib/fraud.ts`) are
+  `pending` until a manager decides in `/m/review`. Time on site counts only photos that
+  pass `photoCounts` (review `none` or `approved`). For required steps (`missingSteps`) a
+  pending work photo or skip counts for now, so a wrongly flagged photo never blocks a
+  worker; a rejected one doesn't.
+- Skipped customer steps are rows in `job_skips`, each with its own review.
+- Worker check-in routes use `apiWorker` (session + the notice in `/w` read). While
+  "Workers must log in with fingerprint or face" is on, `getSessionUser` refuses PIN
+  sessions of workers who have a passkey.
+- The customer code (`jobs.customer_code`) never goes to the worker's browser: the worker
+  page passes explicit props to `JobSteps`, never the job row.
 - Request bodies are read with `readBody` (a byte limit that also holds for chunked
   uploads), images checked with `imageInfo`, and files stored with `putFile`, which throws
   `StorageError` (answer 507) when storage is full or refuses the file.
