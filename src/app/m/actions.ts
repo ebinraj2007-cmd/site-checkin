@@ -55,7 +55,6 @@ type JobInput = {
   requireCustomerCode: boolean;
 };
 
-
 // `currentWorker` stays allowed when editing, even if they have since been deactivated.
 async function readJobForm(form: FormData, currentWorker: string | null = null): Promise<JobInput | { error: string }> {
   const settings = await getSettings();
